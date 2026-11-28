@@ -187,6 +187,33 @@ def _supports_event_seed():
         return False
 
 
+def quiet_sleep_seconds(spec, tz_name='Asia/Shanghai', now=None):
+    """Return seconds remaining in a quiet-hours window (`HH:MM-HH:MM`, e.g. `00:00-10:30`), or 0.0 if outside."""
+    if not spec or '-' not in str(spec):
+        return 0.0
+    from datetime import datetime, timedelta, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone(timedelta(hours=8)) if 'Shanghai' in str(tz_name) or 'Beijing' in str(tz_name) else timezone.utc
+    s_part, e_part = str(spec).strip().split('-', 1)
+    sh, sm = (int(x) for x in s_part.strip().split(':'))
+    eh, em = (int(x) for x in e_part.strip().split(':'))
+    s_min, e_min = (sh % 24) * 60 + sm, (eh % 24) * 60 + em
+    if s_min == e_min:
+        return 0.0
+    dt = datetime.fromtimestamp(time.time() if now is None else float(now), tz=tz)
+    cur = dt.hour * 60 + dt.minute + dt.second / 60.0
+    if s_min < e_min:
+        return (e_min - cur) * 60.0 if s_min <= cur < e_min else 0.0
+    if cur >= s_min:
+        return ((1440.0 - cur) + e_min) * 60.0
+    if cur < e_min:
+        return (e_min - cur) * 60.0
+    return 0.0
+
+
 def _prefetch_noise(prog, k0, H, dev):
     """Defensively invoke Track A's optional `prog.prefetch_noise(...)` once per window -> list of H (z, u) pairs or None."""
     fn = getattr(prog, 'prefetch_noise', None)
@@ -3450,6 +3477,8 @@ def main():
     ap.add_argument('--diloco-worker', default='', help='worker identifier sent to --diloco-hub (default: OUT dir name or hostname)')
     ap.add_argument('--diloco-compress', choices=('int8', 'bf16'), default='int8', help='pseudo-gradient compression for --diloco-hub')
     ap.add_argument('--diloco-timeout', type=float, default=180., help='HTTP timeout in seconds for --diloco-hub /sync requests')
+    ap.add_argument('--quiet-hours', default='', help='local quiet window (HH:MM-HH:MM, e.g. 00:00-10:30 for guomao) during which training pauses at 0%% GPU and resumes automatically')
+    ap.add_argument('--quiet-tz', default='Asia/Shanghai', help='IANA timezone for --quiet-hours (default: Asia/Shanghai)')
     ap.add_argument('--save-every', type=int, default=0, help='every row whose number is a multiple of this keeps its checkpoint as rowN.pt beside last.pt, '
                     'and so does the row the run ends on (0: last.pt and best.pt alone; decoupled from --eval-every)')
     ap.add_argument('--keep-saves', type=int, default=0, help='with --save-every: keep at most this many newest rowN.pt snapshots (0: keep all; never deletes last.pt or best.pt)')
@@ -3705,7 +3734,8 @@ def main():
                 if ema is not None and ema.device.type == 'cuda':
                     ema.avg.actor.enable_compile(dynamic=True)
             if getattr(critic, 'privileged', False):
-                critic.forward = torch.compile(critic.forward, dynamic=True)
+                torch._dynamo.config.cache_size_limit = max(getattr(torch._dynamo.config, 'cache_size_limit', 8), 64)
+                critic.forward = torch.compile(critic.forward, dynamic=False)
             if getattr(a, 'mech', 0.) == 0. and hasattr(C, 'enable_sim_compile'):
                 C.enable_sim_compile(True, dynamic=False)
                 if hasattr(N, 'enable_priv_compile'):
@@ -3713,6 +3743,33 @@ def main():
             print(json.dumps(dict(compiled=True, triton=getattr(triton, '__version__', 'ok'), sim_compiled=bool(getattr(C, 'is_sim_compiled', lambda: False)()))), flush=True)
         except Exception as exc:
             print(json.dumps(dict(compiled=False, reason=repr(exc))), flush=True)
+    quiet_paused_s = [0.0]
+
+    def maybe_quiet_pause(forget_models=True, count_pause=True):
+        if not getattr(a, 'quiet_hours', ''):
+            return
+        wait_s = quiet_sleep_seconds(a.quiet_hours, getattr(a, 'quiet_tz', 'Asia/Shanghai'))
+        if wait_s <= 0:
+            return
+        if forget_models:
+            forget(net, shown)
+        if dev.type == 'cuda':
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        print(dumps(dict(quiet_pause=a.quiet_hours, tz=a.quiet_tz, resume_in_s=round(wait_s, 1))), flush=True)
+        q_start = time.time()
+        while True:
+            rem = quiet_sleep_seconds(a.quiet_hours, getattr(a, 'quiet_tz', 'Asia/Shanghai'))
+            if rem <= 0:
+                break
+            alive(row=c['row'], windows=c['windows'], quiet=True)
+            time.sleep(min(60.0, rem))
+        slept = time.time()-q_start
+        if count_pause:
+            quiet_paused_s[0] += slept
+        print(dumps(dict(quiet_resume=a.quiet_hours, slept_s=round(slept, 1))), flush=True)
+
+    maybe_quiet_pause(forget_models=False, count_pause=False)
     if a.eval_every > 0:
         vprog = C.build(a.val_n, a.val_seed, dev, 'cpu', mech=a.val_mech)     # always drawn on the CPU: the same episodes on every machine
         ref = cached_refs(a.val_cache, f'val-n{a.val_n}-s{a.val_seed}-m{a.val_mech}-mt{int(bool(a.meter))}', vprog, a.meter)
@@ -3758,7 +3815,7 @@ def main():
     (a.out/'run.json').write_text(dumps(meta, indent=1, default=str))
     print(dumps(meta, default=str), flush=True)
     t0 = time.time()
-    hours = lambda: c['hours']+(time.time()-t0)/3600              # noqa: E731
+    hours = lambda: c['hours']+(time.time()-t0-quiet_paused_s[0])/3600              # noqa: E731
     diloco = None
     if a.diloco_hub:
         diloco = DiLoCoClient(a.diloco_hub, a.diloco_h, worker=a.diloco_worker or a.out.name,
@@ -3915,7 +3972,7 @@ def main():
             return False
         if a.cosine_by == 'hours':
             return hours() < a.hours
-        if (time.time()-t0)/3600 >= a.hours:                      # wall-clock session cap decoupled from LR schedule
+        if (time.time()-t0-quiet_paused_s[0])/3600 >= a.hours:    # wall-clock active session cap decoupled from LR schedule & quiet sleep
             return False
         if a.cosine_by == 'updates' and a.total_updates > 0 and c['updates'] >= a.total_updates:
             return False
@@ -3924,6 +3981,7 @@ def main():
         return True
 
     while keep_going():
+        maybe_quiet_pause(forget_models=True, count_pause=True)
         lr = scheduled_lr(a, c, hours(), hub_lr=None if diloco is None else diloco.hub_lr)
         for g in opt.param_groups:
             g['lr'] = g['set_lr'] = lr*g.get('lr_mult', 1.)

@@ -40,22 +40,26 @@ HOSTS = {
     'guomao': dict(
         ssh='guomao', wsl_distro='Ubuntu-24.04', wsl_user='root', native=False,
         repo='/root/AIOGym2', python='/root/AIOGym2/.venv/bin/python', runs_root='/root/aio-runs',
-        native_alias='guomao-wsl', default_sizes='6:12x5@80 1:24x10@28 1:48x20@18', default_accum=1,
+        native_alias='guomao-wsl', default_sizes='6:12x5@72 1:24x10@28 1:48x20@16', default_accum=1,
+        default_quiet_hours='00:00-10:30',
     ),
     'guomao-wsl': dict(
         ssh='guomao-wsl', wsl_distro=None, wsl_user=None, native=True,
         repo='/root/AIOGym2', python='/root/AIOGym2/.venv/bin/python', runs_root='/root/aio-runs',
-        default_sizes='6:12x5@80 1:24x10@28 1:48x20@18', default_accum=1,
+        default_sizes='6:12x5@72 1:24x10@28 1:48x20@16', default_accum=1,
+        default_quiet_hours='00:00-10:30',
     ),
     'baolong': dict(
         ssh='baolong', wsl_distro='Ubuntu', wsl_user='root', native=False,
         repo='/root/AIOGym2', python='/root/AIOGym2/.venv/bin/python', runs_root='/root/aio-runs',
-        native_alias='baolong-wsl', default_sizes='6:12x5@48 1:24x10@24 1:48x20@10', default_accum=2,
+        native_alias='baolong-wsl', default_sizes='6:12x5@44 1:24x10@20 1:48x20@8', default_accum=2,
+        default_quiet_hours=None,
     ),
     'baolong-wsl': dict(
         ssh='baolong-wsl', wsl_distro=None, wsl_user=None, native=True,
         repo='/root/AIOGym2', python='/root/AIOGym2/.venv/bin/python', runs_root='/root/aio-runs',
-        default_sizes='6:12x5@48 1:24x10@24 1:48x20@10', default_accum=2,
+        default_sizes='6:12x5@44 1:24x10@20 1:48x20@8', default_accum=2,
+        default_quiet_hours=None,
     ),
 }
 
@@ -461,6 +465,8 @@ def recommend_resume_flags(dst_ep, meta, total_updates=None, lr=None, accum=None
         hcfg = dst_ep['host_cfg']
         acc = accum if accum is not None else hcfg.get('default_accum', 1)
         flags += ['--accum', str(int(acc)), '--val-cache', '$HOME/.cache/aio/val-cache']
+        if hcfg.get('default_quiet_hours'):
+            flags += ['--quiet-hours', str(hcfg['default_quiet_hours'])]
     return flags
 
 
@@ -567,15 +573,19 @@ def handoff(src_spec, dst_spec, *, colab_root=None, total_updates=None, lr=None,
 
 
 def start_job(host_cfg, host_name, job_name, cmd, *, ref=None, put_files=(), use_systemd=False,
-              extra_env=None, thermal_warn_c=THERMAL_WARN_C):
-    """Launch a detached 24x7 training job inside WSL2 with ext4 caches and GPU thermal heartbeat."""
+              extra_env=None, thermal_warn_c=THERMAL_WARN_C, quiet_hours=None):
+    """Launch a detached 24x7 training job inside WSL2 with ext4 caches, quiet-hours guard, and GPU thermal heartbeat."""
     job_dir = f'{host_cfg["runs_root"]}/{job_name}'
     env = dict(DEFAULT_ENV)
     if extra_env:
         env.update(extra_env)
+    cmd = list(cmd)
+    qh = host_cfg.get('default_quiet_hours') if quiet_hours is None else quiet_hours
+    if qh and any('aio.train' in str(x) for x in cmd) and '--quiet-hours' not in cmd:
+        cmd.extend(['--quiet-hours', str(qh)])
     spec = dict(
-        name=job_name, host=host_name, repo=host_cfg['repo'], cmd=list(cmd),
-        env=env, thermal_warn_c=float(thermal_warn_c), started=time.time(),
+        name=job_name, host=host_name, repo=host_cfg['repo'], cmd=cmd,
+        env=env, thermal_warn_c=float(thermal_warn_c), quiet_hours=qh, started=time.time(),
     )
     setup = [
         'set -euo pipefail',
@@ -808,6 +818,8 @@ def build_parser():
     p_start.add_argument('--put', action='append', default=[], help='Local file to place into {in}/NAME')
     p_start.add_argument('--systemd', action='store_true', help='Use systemd-run --user when available')
     p_start.add_argument('--thermal-warn', type=float, default=THERMAL_WARN_C)
+    p_start.add_argument('--quiet-hours', default=None, help='Override quiet window HH:MM-HH:MM (default: host profile, guomao=00:00-10:30)')
+    p_start.add_argument('--no-quiet-hours', action='store_true', help='Disable default host quiet-hours pause')
     p_start.add_argument('--native-ssh', action='store_true')
     p_start.add_argument('--wsl-distro', default=None)
 
@@ -861,8 +873,9 @@ def main(argv=None):
         if not cmd:
             raise SystemExit('start requires a command after --')
         hcfg = resolve_host(a.host, wsl_distro=a.wsl_distro, native_ssh=a.native_ssh)
+        qh = '' if a.no_quiet_hours else a.quiet_hours
         res = start_job(hcfg, a.host, a.name, cmd, ref=a.ref, put_files=a.put,
-                        use_systemd=a.systemd, thermal_warn_c=a.thermal_warn)
+                        use_systemd=a.systemd, thermal_warn_c=a.thermal_warn, quiet_hours=qh)
         print(json.dumps(res, indent=1))
     elif a.do == 'status':
         hcfg = resolve_host(a.host, wsl_distro=a.wsl_distro, native_ssh=a.native_ssh)

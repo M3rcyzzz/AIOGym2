@@ -625,3 +625,38 @@ def test_mine_hard_seeds_vector_rng_parity_and_regret_ranking(tmp_path):
     saved_p = json.loads(out_plant.read_text(encoding='utf-8'))
     assert saved_p == payload_p and saved_p['meta']['mode'] == 'plant'
     assert len(saved_p['seeds']) == 1 and saved_p['seeds'][0] in range(10_000_000, 10_000_004)
+
+
+def test_guomao_quiet_hours_enforced_in_eval_worker_and_local_job(tmp_path):
+    """guomao enforces 00:00-10:30 CST quiet hours in both eval_worker routing and local_job defaults."""
+    from datetime import datetime, timedelta, timezone
+    cst = timezone(timedelta(hours=8))
+    night = datetime(2026, 11, 29, 1, 15, tzinfo=cst).timestamp()
+    day = datetime(2026, 11, 29, 11, 0, tzinfo=cst).timestamp()
+
+    assert ew.in_quiet_hours('00:00-10:30', 'Asia/Shanghai', now=night) is True
+    assert ew.in_quiet_hours('00:00-10:30', 'Asia/Shanghai', now=day) is False
+    # During quiet hours guomao routes to baolong (or custom fallback); baolong runs 24x7
+    assert ew.pick_eval_host('guomao', now=night) == 'baolong'
+    assert ew.pick_eval_host('guomao-wsl', fallback_host='local', now=night) == 'local'
+    assert ew.pick_eval_host('guomao', now=day) == 'guomao'
+    assert ew.pick_eval_host('baolong', now=night) == 'baolong'
+
+    # evaluate_snapshot records the effective rerouted eval_host during quiet hours
+    run_root = tmp_path / 'qtest' / 'run'
+    _write_fake_pt(run_root / 'eval' / 'row10.pt', {'row': 10})
+    entries = ew.process_once(
+        run_root, eval_host='guomao', quiet_now=night, famexam_every=0, famexam_delta=0,
+        score_fn=lambda p: {'iter': 10, 'val': {'pts': 50.0}},
+    )
+    assert len(entries) == 1 and entries[0]['eval_host'] == 'baolong'
+
+    # local_job recommends & defaults --quiet-hours 00:00-10:30 for guomao, None for baolong
+    ep_g = lj.parse_endpoint('local:guomao:sq-11')
+    ep_b = lj.parse_endpoint('local:baolong:sq-11')
+    flags_g = lj.recommend_resume_flags(ep_g, {'updates': 4000, 'lr': 6e-5})
+    flags_b = lj.recommend_resume_flags(ep_b, {'updates': 4000, 'lr': 6e-5})
+    assert '--quiet-hours' in flags_g and '00:00-10:30' in flags_g
+    assert '--quiet-hours' not in flags_b
+    assert lj.resolve_host('guomao')['default_quiet_hours'] == '00:00-10:30'
+    assert lj.resolve_host('baolong')['default_quiet_hours'] is None

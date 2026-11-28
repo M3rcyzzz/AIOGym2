@@ -4,8 +4,13 @@
 
 ## 总体分工：两套档位，一套工具
 
-- **档位一（Colab 额度充足期）**：Colab G4 专注纯训练，关闭训练循环内的验证与结束后的轨迹检查，每 10 轮导出约 268 MB 的轻量验证快照；本地 `guomao` / `baolong` 与 Mac 负责零额度异步验证、机理装置考试、困难种子挖掘和上线前的本地对照实验。
-- **档位二（Colab 额度空窗期）**：将主线权重无缝交接到本地，由 `guomao` 与 `baolong` 组成弹性双机等步长 MuLoCo 协同训练，Mac 运行协调中心 `monitoring/diloco_hub.py`。任意一台本地机器离线或抽调去做对照实验时，另一台自动按单机模式继续推进，不中断主线。
+- **档位一（Colab 额度充足期）**：Colab G4 专注纯训练，关闭训练循环内的验证与结束后的轨迹检查，每 10 轮导出约 268 MB 的轻量验证快照；本地 `guomao`（白天）/`baolong`（全天候）与 Mac 负责零额度异步验证、机理装置考试、困难种子挖掘和上线前的本地对照实验。
+- **档位二（Colab 额度空窗期）**：将主线权重无缝交接到本地，由 `guomao` 与 `baolong` 组成弹性双机等步长 MuLoCo 协同训练，Mac 运行协调中心 `monitoring/diloco_hub.py`。任意一台本地机器离线、进入夜间静音时段或抽调去做对照实验时，另一台自动按单机模式继续推进，不中断主线。
+
+> **夜间静音硬约束（`guomao`）**：`guomao` 在每天 **00:00–10:30（北京时间 `Asia/Shanghai`）** 禁止运行任何训练、GPU 基准测试或 GPU 验证，避免风扇噪音打扰休息。该规则已直接内置到代码默认行为中：
+> - `local_job.py` 在 `guomao` 启动训练时自动注入 `--quiet-hours 00:00-10:30`，到达 `00:00` 自动清空显存、保持 0% GPU 休眠，次日 `10:30` 自动唤醒续训（休眠时间不计入有效训练时长）；
+> - `eval_worker.py` 在 `00:00–10:30` 期间自动将指向 `guomao` 的验证任务改派到 `baolong`（或 `--fallback-eval-host local` 本机 Mac）；
+> - 在双机弹性 MuLoCo 模式下，白天 `10:30–00:00` 由 `guomao` 与 `baolong` 协同推进，夜间 `00:00–10:30` 自动由办公室的 `baolong` 单机接力，次日 `10:30` `guomao` 醒来后自动对齐到最新全局权重归队。
 
 ---
 
@@ -144,17 +149,19 @@ python3 -m monitoring.diloco_hub \
 两台机器使用不同 `--seed`（保证抽样装置完全独立），按相同内层步数 `--diloco-h 32` 与 Mac 协调中心同步（传输按 128 分组对称 INT8 压缩的增量，仅约 133 MB，并同步平均 `PrivCritic` 与 `rel_probe`）：
 
 ```bash
-# guomao 节点（将 MAC_TAILSCALE_IP 替换为 Mac 的 Tailscale 地址）
+# guomao 节点（24 GB RTX 5090，自动附加 --quiet-hours 00:00-10:30；将 MAC_TAILSCALE_IP 替换为 Mac 的 Tailscale 地址）
 python3 -m monitoring.local_job start guomao-wsl muloco-g --systemd -- \
   /root/AIOGym2/.venv/bin/python -m aio.train --out {run} --resume \
-  --seed 101 --ema 0 --eval-every 0 \
+  --seed 101 --ema 0 --eval-every 0 --compile \
+  --sizes 6:12x5@72 1:24x10@28 1:48x20@16 --accum 1 \
   --diloco-hub http://MAC_TAILSCALE_IP:8770 --diloco-h 32 \
   --diloco-worker guomao --diloco-compress int8
 
-# baolong 节点
+# baolong 节点（16 GB RTX 4090，全天候运行，夜间 00:00-10:30 自动单机接力主线）
 python3 -m monitoring.local_job start baolong-wsl muloco-b --systemd -- \
   /root/AIOGym2/.venv/bin/python -m aio.train --out {run} --resume \
-  --seed 202 --ema 0 --eval-every 0 \
+  --seed 202 --ema 0 --eval-every 0 --compile \
+  --sizes 6:12x5@44 1:24x10@20 1:48x20@8 --accum 2 \
   --diloco-hub http://MAC_TAILSCALE_IP:8770 --diloco-h 32 \
   --diloco-worker baolong --diloco-compress int8
 ```

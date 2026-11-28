@@ -32,17 +32,52 @@ SNAP_PATTERNS = (
 REMOTE_PROFILES = {
     'guomao': dict(ssh='guomao', wsl_distro='Ubuntu-24.04', wsl_user='root', native=False,
                    repo='/root/AIOGym2', python='/root/AIOGym2/.venv/bin/python',
-                   val_cache='/root/.cache/aio/val-cache', stage='/root/.cache/aio/eval-stage'),
+                   val_cache='/root/.cache/aio/val-cache', stage='/root/.cache/aio/eval-stage',
+                   quiet_hours='00:00-10:30'),
     'guomao-wsl': dict(ssh='guomao-wsl', wsl_distro=None, wsl_user=None, native=True,
                        repo='/root/AIOGym2', python='/root/AIOGym2/.venv/bin/python',
-                       val_cache='/root/.cache/aio/val-cache', stage='/root/.cache/aio/eval-stage'),
+                       val_cache='/root/.cache/aio/val-cache', stage='/root/.cache/aio/eval-stage',
+                       quiet_hours='00:00-10:30'),
     'baolong': dict(ssh='baolong', wsl_distro='Ubuntu', wsl_user='root', native=False,
                     repo='/root/AIOGym2', python='/root/AIOGym2/.venv/bin/python',
-                    val_cache='/root/.cache/aio/val-cache', stage='/root/.cache/aio/eval-stage'),
+                    val_cache='/root/.cache/aio/val-cache', stage='/root/.cache/aio/eval-stage',
+                    quiet_hours=None),
     'baolong-wsl': dict(ssh='baolong-wsl', wsl_distro=None, wsl_user=None, native=True,
                         repo='/root/AIOGym2', python='/root/AIOGym2/.venv/bin/python',
-                        val_cache='/root/.cache/aio/val-cache', stage='/root/.cache/aio/eval-stage'),
+                        val_cache='/root/.cache/aio/val-cache', stage='/root/.cache/aio/eval-stage',
+                        quiet_hours=None),
 }
+
+
+def in_quiet_hours(spec, tz_name='Asia/Shanghai', now=None):
+    """Return True if current time in `tz_name` falls inside `HH:MM-HH:MM` quiet window."""
+    if not spec or '-' not in str(spec):
+        return False
+    from datetime import datetime, timedelta, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone(timedelta(hours=8)) if 'Shanghai' in str(tz_name) else timezone.utc
+    s_part, e_part = str(spec).strip().split('-', 1)
+    sh, sm = (int(x) for x in s_part.strip().split(':'))
+    eh, em = (int(x) for x in e_part.strip().split(':'))
+    s_min, e_min = (sh % 24) * 60 + sm, (eh % 24) * 60 + em
+    if s_min == e_min:
+        return False
+    dt = datetime.fromtimestamp(time.time() if now is None else float(now), tz=tz)
+    cur = dt.hour * 60 + dt.minute + dt.second / 60.0
+    if s_min < e_min:
+        return s_min <= cur < e_min
+    return cur >= s_min or cur < e_min
+
+
+def pick_eval_host(eval_host, fallback_host=None, tz_name='Asia/Shanghai', now=None):
+    """Avoid waking quiet-hours hosts (e.g. guomao 00:00-10:30 CST) by routing evals to fallback host."""
+    prof = REMOTE_PROFILES.get(eval_host)
+    if prof and in_quiet_hours(prof.get('quiet_hours'), tz_name=tz_name, now=now):
+        return fallback_host or ('baolong' if eval_host.startswith('guomao') else 'local')
+    return eval_host
 
 
 def sanitize_finite(obj):
@@ -297,6 +332,8 @@ def run_score(snap_path, eval_host='local', python_bin=None, val_cache=None, val
     snap_path = Path(snap_path)
     if eval_host == 'local':
         py = python_bin or sys.executable
+        if val_cache and str(val_cache).startswith('/root/') and not os.access('/root', os.W_OK):
+            val_cache = Path.home() / '.cache' / 'aio' / 'val-cache'
         cmd = build_score_cmd(py, snap_path, val_cache=val_cache, val_n=val_n, val_seed=val_seed,
                               val_sizes=val_sizes, val_raw=val_raw, meter=meter, device=device)
         env = dict(os.environ, PYTHONPATH=str(REPO), PYTHONUNBUFFERED='1')
@@ -416,7 +453,8 @@ def should_trigger_famexam(row_iter, pts, is_new_best, famexam_every, famexam_de
 
 
 def evaluate_snapshot(run_root, snap_path, best_state, last_famexam_pts, *,
-                      eval_host='local', python_bin=None, val_cache=None, val_n=256,
+                      eval_host='local', fallback_eval_host=None, quiet_tz='Asia/Shanghai', quiet_now=None,
+                      python_bin=None, val_cache=None, val_n=256,
                       val_seed=1_000_000, val_sizes=None, val_raw=True, meter=True,
                       device=None, famexam_every=50, famexam_delta=0.5,
                       famexam_plants=DEFAULT_FAMEXAM_PLANTS, famexam_n=8, famexam_device='cpu',
@@ -424,6 +462,9 @@ def evaluate_snapshot(run_root, snap_path, best_state, last_famexam_pts, *,
                       score_fn=None, famexam_fn=None):
     """Score one snapshot, append sidecar eval.jsonl, update best_eval.json/best_eval.pt, and run milestone famexam."""
     run_root, snap_path = Path(run_root), Path(snap_path)
+    eff_host = pick_eval_host(eval_host, fallback_host=fallback_eval_host, tz_name=quiet_tz, now=quiet_now)
+    if eff_host != eval_host:
+        print(f'eval_worker: quiet hours on {eval_host}, routing {snap_path.name} to {eff_host}', file=sys.stderr, flush=True)
     info = parse_snap_info(snap_path.name)
     kind, idx = info if info else ('row', None)
     sig = snap_signature(snap_path)
@@ -433,7 +474,7 @@ def evaluate_snapshot(run_root, snap_path, best_state, last_famexam_pts, *,
         score_out = score_fn(snap_path)
     else:
         score_out = run_score(
-            snap_path, eval_host=eval_host, python_bin=python_bin, val_cache=val_cache,
+            snap_path, eval_host=eff_host, python_bin=python_bin, val_cache=val_cache,
             val_n=val_n, val_seed=val_seed, val_sizes=val_sizes, val_raw=val_raw,
             meter=meter, device=device, native_ssh=native_ssh, wsl_distro=wsl_distro,
             remote_repo=remote_repo, remote_python=remote_python,
@@ -453,7 +494,7 @@ def evaluate_snapshot(run_root, snap_path, best_state, last_famexam_pts, *,
             fam_summary = famexam_fn(snap_path, fam_out)
         else:
             fam_summary = run_famexam(
-                snap_path, fam_out, eval_host=eval_host, python_bin=python_bin,
+                snap_path, fam_out, eval_host=eff_host, python_bin=python_bin,
                 plants=famexam_plants, n=famexam_n, device=famexam_device,
                 native_ssh=native_ssh, wsl_distro=wsl_distro,
                 remote_repo=remote_repo, remote_python=remote_python,
@@ -478,7 +519,7 @@ def evaluate_snapshot(run_root, snap_path, best_state, last_famexam_pts, *,
         raw=score_out.get('raw'),
         val_sizes=score_out.get('val_sizes'),
         famexam=fam_summary,
-        eval_host=eval_host,
+        eval_host=eff_host,
         eval_seconds=round(elapsed, 2),
         evaluated_at=round(time.time(), 3),
     )
@@ -503,7 +544,7 @@ def evaluate_snapshot(run_root, snap_path, best_state, last_famexam_pts, *,
             raw=score_out.get('raw'),
             val_sizes=score_out.get('val_sizes'),
             famexam=fam_summary,
-            eval_host=eval_host,
+            eval_host=eff_host,
             updated_at=round(time.time(), 3),
         )
         best_state = {k: v for k, v in best_state.items() if v is not None}
@@ -531,6 +572,8 @@ def build_parser():
     ap = argparse.ArgumentParser(description='Zero-CU async validation & exam daemon (watches eval/row*.pt).')
     ap.add_argument('--run-dir', type=Path, required=True, help='Job or run directory containing eval/row*.pt')
     ap.add_argument('--eval-host', default='local', help='local, guomao, baolong, guomao-wsl, baolong-wsl, or SSH host')
+    ap.add_argument('--fallback-eval-host', default=None, help='Fallback host used during eval-host quiet hours (default: baolong for guomao, else local)')
+    ap.add_argument('--quiet-tz', default='Asia/Shanghai', help='Timezone for quiet-hours check (default: Asia/Shanghai)')
     ap.add_argument('--val-cache', type=Path, default=None, help='Persistent directory for cached validation references')
     ap.add_argument('--val-n', type=int, default=256)
     ap.add_argument('--val-seed', type=int, default=1_000_000)
@@ -561,7 +604,8 @@ def main(argv=None):
     if val_cache is None and a.eval_host == 'local':
         val_cache = Path.home() / '.cache' / 'aio' / 'val-cache'
     kw = dict(
-        eval_host=a.eval_host, python_bin=a.python_bin, val_cache=val_cache,
+        eval_host=a.eval_host, fallback_eval_host=a.fallback_eval_host, quiet_tz=a.quiet_tz,
+        python_bin=a.python_bin, val_cache=val_cache,
         val_n=a.val_n, val_seed=a.val_seed, val_sizes=a.val_sizes,
         val_raw=a.val_raw, meter=a.meter, device=a.device,
         famexam_every=a.famexam_every, famexam_delta=a.famexam_delta,

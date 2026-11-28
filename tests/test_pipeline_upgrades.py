@@ -603,3 +603,22 @@ def test_diloco_client_int8_roundtrip_mock_hub_and_fault_tolerance():
     dead_client.record(2, 200)
     err_res = dead_client.maybe_sync(net, critic, rel_probe)
     assert err_res['accepted'] is False and 'error' in err_res
+
+
+def test_quiet_sleep_seconds_enforces_guomao_quiet_hours():
+    """Verify --quiet-hours parser handles 00:00-10:30 CST, boundary times, wrap-around windows, and disabled specs."""
+    from datetime import datetime, timedelta, timezone
+    cst = timezone(timedelta(hours=8))
+    ts = lambda h, m, s=0: datetime(2026, 11, 29, h, m, s, tzinfo=cst).timestamp()
+
+    assert T.quiet_sleep_seconds('', 'Asia/Shanghai', now=ts(1, 0)) == 0.0
+    assert T.quiet_sleep_seconds('00:00-10:30', 'Asia/Shanghai', now=ts(0, 0, 0)) == pytest.approx(10.5 * 3600)
+    assert T.quiet_sleep_seconds('00:00-10:30', 'Asia/Shanghai', now=ts(1, 0, 0)) == pytest.approx(9.5 * 3600)
+    assert T.quiet_sleep_seconds('00:00-10:30', 'Asia/Shanghai', now=ts(10, 29, 30)) == pytest.approx(30.0)
+    assert T.quiet_sleep_seconds('00:00-10:30', 'Asia/Shanghai', now=ts(10, 30, 0)) == 0.0
+    assert T.quiet_sleep_seconds('00:00-10:30', 'Asia/Shanghai', now=ts(15, 0, 0)) == 0.0
+    assert T.quiet_sleep_seconds('00:00-10:30', 'Asia/Shanghai', now=ts(23, 59, 0)) == 0.0
+    # Overnight wrap-around window (23:30-10:30)
+    assert T.quiet_sleep_seconds('23:30-10:30', 'Asia/Shanghai', now=ts(23, 45, 0)) == pytest.approx(10.75 * 3600)
+    assert T.quiet_sleep_seconds('23:30-10:30', 'Asia/Shanghai', now=ts(2, 0, 0)) == pytest.approx(8.5 * 3600)
+    assert T.quiet_sleep_seconds('23:30-10:30', 'Asia/Shanghai', now=ts(12, 0, 0)) == 0.0
