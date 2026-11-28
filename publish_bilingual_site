@@ -1,0 +1,10 @@
+"""Launcher for the site publisher as one plain command, with no PYTHONPATH and no cd before it (the training
+machine's allow list matches `publish_bilingual_site build|deploy` per command; a compound command falls back to
+the auto-mode classifier). Usage, from anywhere:
+
+  python <tree>/publish_bilingual_site build|deploy --work W --release R --host ubuntu --baolong local
+"""
+import pathlib, runpy, sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+runpy.run_module('experiments.shared_rl_view.publish_bilingual_site', run_name='__main__', alter_sys=True)

@@ -1,0 +1,3264 @@
+{
+ "as_of": "2026-11-28T21:55:00+08:00",
+ "status": {
+  "pill": "Stage 10 round 280 · 12×5 hits 47.8 EMA / 48.0 raw · 0.8 from PID",
+  "pill_zh": "第十阶段第 280 轮 · 12×5 创 47.8 平均 / 48.0 实时 · 距自整定PID 仅 0.8 分"
+ },
+ "insights": {
+  "finding_title": "Stage 10 rounds 270–280 surged to all-time highs across every 12×5 metric: 47.8 moving-average / 48.0 raw (first time ever past 48, just 0.8 behind self-tuning PID 48.6), levels 41.6 EMA / 41.9 raw, non-level 51.5 EMA / 51.7 raw, and record-low episode costs on both 12×5 (236.3k) and 24×10 (149.5k).",
+  "finding": "Running smoothly on the fresh 96 GB Blackwell GPU (9.10 / 16.0 h, 57% elapsed, compiled engine at 72–92 s/row, 95% GPU utilization, zero allocation retries, zero bad samples), Stage 10 broke through its plateau in rounds 270–280: round 270 lifted 12×5 to 47.5 EMA / 47.8 raw with integrating levels surging to 41.6 EMA / 41.9 raw (within 0.1 of self-tuning PID 42.0), constraint violations down to an all-time low of 35.1%, and valve reversals down to 33.0%; round 280 climbed again to 47.8 EMA / 48.0 raw (first time past 48 in project history), pushed non-level to 51.5 EMA / 51.7 raw (within 0.5 of PID 52.2), dropped 12×5 episode cost to an all-time low of 236.3k, held 24×10 at 59.3 with its first-ever episode cost below 150k (149.5k, levels 60.7, violations 12.7%), and kept 48×20 at 64.9 (non-level 81.3, 50.0% win vs. PID). Weight inspection confirmed the precision-gate and in-flight pipe weights have grown +146% and +110% since round 80 and continue climbing.",
+  "bottleneck_title": "With 6.9 hours (~240+ rounds) still remaining in the cosine decay on the fresh 96 GB GPU, Stage 10 sits only 0.8 points below self-tuning PID (48.6) on 12×5 moving-average and 0.6 points away on raw weights (48.0).",
+  "bottleneck": "Integrating-level loops have nearly caught self-tuning PID (41.6–41.9 vs. 42.0), and non-level loops are within half a point (51.5–51.7 vs. 52.2). Remaining excess cost is concentrated in the hardest 45+-step high-purity separation loops as the learning rate tapers smoothly from 2.7e-5 downward.",
+  "next_title": "Track Stage 10 rounds 290–500 to push 12×5 decisively past self-tuning PID (48.6) toward 50+, 24×10 past 60, and 48×20 past 66.",
+  "next": "As soon as 12×5 moving-average clears self-tuning PID (48.6), immediately run a full 8-family zero-shot mechanistic industrial exam, refresh all four dynamic replays, and publish updated public open weights to GitHub, Hugging Face, and ModelScope."
+ },
+ "insights_zh": {
+  "finding_title": "第十阶段第 270–280 轮连破全历史纪录：12×5 飙至平均 47.8 / 实时首破 48 达 48.0（距自整定PID 48.6 仅差 0.8 分）、带液位 41.6 平均 / 41.9 实时、不带液位 51.5 平均 / 51.7 实时，12×5（23.63 万）与 24×10（14.95 万）单回合总代价齐创新低。",
+  "finding": "在新 96 GB Blackwell GPU 上稳步推进至第 281 轮（已跑 9.10 / 16.0 小时、进度 57%，编译引擎单轮 72–92 秒、GPU 利用率 95%、零重试零坏样本），第十阶段于第 270–280 轮打破平台期连创全线新高：第 270 轮 12×5 跃至平均 47.5 / 实时 47.8，带液位飙至平均 41.6 / 实时 41.9（距自整定PID 42.0 仅差 0.1 分），越限率创 35.1% 全历史新低、换向率降至 33.0%；第 280 轮再涨至平均 47.8 / 实时 48.0（项目历史首次突破 48），不带液位创平均 51.5 / 实时 51.7 新高（距 PID 52.2 仅差 0.5 分），12×5 总代价压至 23.63 万新低，24×10 稳在 59.3 且总代价历史首次跌破 15 万（14.95 万、带液位 60.7、越限率 12.7%），48×20 稳在 64.9（不带液位 81.3、对 PID 胜率 50.0%）。权重剖析证实精调门控与在途管道权重较第 80 轮分别已增长 146% 与 110%，仍在健康攀升。",
+  "bottleneck_title": "第十阶段在新 GPU 上仍余约 6.9 小时（约 240+ 轮）余弦退火，12×5 平均权重距自整定PID（48.6）仅差 0.8 分、实时权重（48.0）仅差 0.6 分。",
+  "bottleneck": "带液位回路（41.6–41.9）已几乎追平自整定PID（42.0），不带液位回路（51.5–51.7）也仅差约半分；剩余失分主要集中在 45 步以上高纯度分离慢对象，随着学习率由 2.7e-5 平滑衰减，有望进一步收口。",
+  "next_title": "跟踪第十阶段第 290–500 轮，推动 12×5 正式反超自整定PID（48.6）并冲击 50+、24×10 破 60、48×20 破 66。",
+  "next": "一旦 12×5 平均权重实破自整定PID（48.6），立即重跑八类工业机理零样本全考、刷新全部 4 组动态回放，并同步更新 GitHub / Hugging Face / ModelScope 开源权重。"
+ },
+ "timeline": [
+  {
+   "date": "2026-11-28 21:55",
+   "tone": "good",
+   "text": "Stage 10 rounds 250–280 on the fresh 96 GB Blackwell GPU (9.10 h, 57% elapsed, round 281 live at 95% GPU util, 72–92 s/row, zero retries, zero bad samples) broke through to new all-time highs: round 270 lifted 12×5 to 47.5 EMA / 47.8 raw with integrating levels surging to 41.6 EMA / 41.9 raw (0.1 from PID 42.0) and violations hitting a record-low 35.1%; round 280 climbed again to 47.8 EMA / 48.0 raw (first time ever past 48, just 0.8 behind self-tuning PID 48.6), non-level 51.5 EMA / 51.7 raw, 12×5 episode cost all-time low 236.3k, 24×10 59.3 with its first-ever episode cost under 150k (149.5k, levels 60.7, violations 12.7%), and 48×20 64.9 (non-level 81.3, 50.0% win vs. PID).",
+   "text_zh": "第十阶段在新 96 GB Blackwell GPU 上推进至第 250–280 轮（9.10 小时、进度 57%，已跑至第 281 轮，GPU 利用率 95%、单轮 72–92 秒、零重试零坏样本）打破平台期连创新高：第 270 轮 12×5 升至平均 47.5 / 实时 47.8，带液位飙至平均 41.6 / 实时 41.9（距自整定PID 42.0 仅差 0.1 分），越限率创 35.1% 历史新低；第 280 轮再涨至平均 47.8 / 实时 48.0（项目历史首次破 48，距自整定PID 48.6 仅差 0.8 分）、不带液位创平均 51.5 / 实时 51.7 新高、12×5 单回合总代价压至 23.63 万新低，24×10 达 59.3 且总代价首次跌破 15 万（14.95 万、带液位 60.7、越限率 12.7%），48×20 达 64.9（不带液位 81.3、对 PID 胜率 50.0%）。"
+  },
+  {
+   "date": "2026-11-28 20:53",
+   "tone": "good",
+   "text": "Stage 10 crossed its 50% halfway mark (8.13 h) and seamlessly auto-migrated at 20.2 h onto a fresh 96 GB Blackwell GPU with zero lost steps (compiled engine back at 73–88 s/row, zero retries, zero bad samples; round 242 hit a new low of 1.574 on unpublished-gain probe loss). Round 240 broke 47 on raw 12×5 for the first time at 47.1 (EMA 46.8, raw levels 40.3–40.4, raw post-event first past 50 at 50.0, EMA episode cost plummeting to an all-time low of 241.2k), tied 24×10’s 59.3 record (levels 60.5, cost low 152.3k, violations 12.7%), and lifted 48×20 to 65.6–65.8 (+9.6 above PID, 53.1% win rate vs. PID, pre-event 64.8, violations 10.5%–10.6%).",
+   "text_zh": "第十阶段正式过半（8.13 小时）并于旧机满 20.2 小时后自动零丢步换至全新 96 GB Blackwell GPU（编译加速已恢复单轮 73–88 秒、零重试零坏样本，第 242 轮未告知增益探针损失再创 1.574 新低）。第 240 轮 12×5 实时权重历史首次破 47 达 47.1（平均 46.8、实时带液位 40.3–40.4、实时事件后首破 50 达 50.0、平均总代价大降至 24.12 万全历史新低），24×10 追平 59.3 纪录（带液位 60.5、总代价 15.23 万新低、越限率 12.7%），48×20 达 65.6–65.8（领先自整定PID 9.6 分、对 PID 胜率 53.1%、事件前 64.8、越限率 10.5%–10.6%）。"
+  },
+  {
+   "date": "2026-11-28 19:53",
+   "tone": "good",
+   "text": "Stage 10 rounds 210–220 (7.54 h, round 226 live at 93% GPU util, 74–92 s/row, zero retries, zero bad samples) crossed two landmark round numbers: round 220 broke 20 on hidden-pairing (blind) control for the first time at 20.0 (20.03, 5.14× Stage 8) and lifted 12×5 non-level to a record 51.2 (within 1.0 of PID 52.2; overall 46.7 EMA / 46.6 raw, 24×10 58.8 with record-low cost 153.5k, 48×20 64.9); round 210 broke 50 on 12×5 post-event recovery for the first time at 50.1 (overall 47.1 EMA / 46.7 raw, raw non-level first past 51 at 51.1, EMA episode cost low 263.6k, 48×20 65.4), marking five straight evaluations locked in 46.5–47.2 EMA / 46.1–46.8 raw.",
+   "text_zh": "第十阶段第 210–220 轮（7.54 小时，已推进至第 226 轮，GPU 利用率 93%、单轮 74–92 秒、零重试零坏样本）接连攻克两大整数关口：第 220 轮不告知配对盲控历史首次突破 20 达 20.0（20.03，第八阶段 5.14 倍），12×5 不带液位再创 51.2 新高（距自整定PID 52.2 仅差 1.0 分；综合平均 46.7 / 实时 46.6，24×10 58.8 且总代价创 15.35 万新低，48×20 64.9）；第 210 轮 12×5 事件后恢复历史首次实破 50 达 50.1（综合平均 47.1 / 实时 46.7、实时不带液位首破 51 达 51.1、平均总代价 26.36 万新低，48×20 65.4），实现连续五次验证稳站平均 46.5–47.2 / 实时 46.1–46.8。"
+  },
+  {
+   "date": "2026-11-28 19:23",
+   "tone": "good",
+   "text": "Stage 10 rounds 180–200 (7.04 h, round 208 live at 95% GPU util, 74–91 s/row, zero retries, zero bad samples) broke records across every scale: round 180 hit all-time 12×5 highs of 47.2 EMA / 46.8 raw (only 1.4 behind self-tuning PID 48.6; non-level 51.2, post-event 50.0, levels 39.9, hidden-pairing 19.7 EMA / 19.6 raw, 5.1× Stage 8), rounds 190–200 held 46.5–46.7 EMA / 46.1–46.3 raw and drove 12×5 violations to a record-low 35.4% (raw win rate 46.5%, raw episode cost low 263.7k); 48×20 broke its record three straight times (65.4 → 65.7 → 65.7, +9.5 above PID; levels 57.6, pre-event 64.5, post-event 68.8, violations low 10.4%); and 24×10 hit 59.2 with a record 61.4 on levels.",
+   "text_zh": "第十阶段第 180–200 轮（7.04 小时，已推进至第 208 轮，GPU 利用率 95%、单轮 74–91 秒、零重试零坏样本）全尺寸连破全历史纪录：第 180 轮 12×5 飙至平均 47.2 / 实时 46.8 新高（距自整定PID 48.6 仅差 1.4 分；不带液位 51.2、事件后 50.0、带液位 39.9、盲控平均 19.7 / 实时 19.6 达第八阶段 5.1 倍），第 190–200 轮稳在平均 46.5–46.7 / 实时 46.1–46.3 并将越限率压至 35.4% 全历史新低（实时胜率 46.5%、实时总代价 26.37 万新低）；48×20 连续三次刷新全历史新高（65.4 → 65.7 → 65.7，领先 PID 9.5 分；带液位 57.6、事件前 64.5、事件后 68.8、越限率 10.4% 新低）；24×10 达 59.2 且带液位创 61.4 新高。"
+  },
+  {
+   "date": "2026-11-28 18:23",
+   "tone": "good",
+   "text": "Stage 10 rounds 140–170 (6.00 h, 95% GPU util, 73–92 s/row, zero retries, zero bad samples) broke 19 on hidden-pairing control for the first time at round 170 (19.1 EMA / 18.7 raw, 4.9× Stage 8) and swept sub-metric highs across all three scales: integrating levels hit 40.0 on 12×5 (round 160), 61.2 on 24×10 (round 160, first past 61), and 56.7 on 48×20 (round 140); pre-event hit 41.0 on 12×5 and 59.3 on 24×10 (round 170); constraint violations fell to 12.6% on 24×10 (round 140) and 10.6% on 48×20 (round 160); and round 140 hit lows on 12×5 episode cost and reversals (28.8% EMA / 27.4% raw), while overall scores held 45.4–46.4 (12×5, best 47.0), 58.0–58.8 (24×10, best 59.3), and 64.0–64.7 (48×20, best 65.2).",
+   "text_zh": "第十阶段第 140–170 轮（6.00 小时、GPU 利用率 95%、单轮 73–92 秒、零重试零坏样本）于第 170 轮实现盲控历史首次破 19 达平均 19.1 / 实时 18.7（第八阶段 4.9 倍），并横扫三档尺寸多项纪录：带液位分别创 12×5 40.0（第 160 轮）、24×10 首破 61 达 61.2（第 160 轮）与 48×20 56.7（第 140 轮）新高；事件前创 12×5 41.0 与 24×10 59.3 新高（第 170 轮）；越限率再创 24×10 12.6%（第 140 轮）与 48×20 10.6%（第 160 轮）新低；第 140 轮创 12×5 总代价与换向率（平均 28.8% / 实时 27.4%）历史新低；综合分稳在 12×5 45.4–46.4（最佳 47.0）、24×10 58.0–58.8（最佳 59.3）、48×20 64.0–64.7（最佳 65.2）。"
+  },
+  {
+   "date": "2026-11-28 17:23",
+   "tone": "good",
+   "text": "Stage 10 rounds 120–130 (5.05 h, round 135 live at 94% GPU util, 74–92 s/row, zero retries, precision-gate +46% and in-flight pipe +35% RMS since round 80) shattered multi-scale records: 48×20 broke 65 for the first time at 65.2 (+9.0 above self-tuning PID 56.2; levels 56.2, pre-event 63.7, round-120 post-event 67.5, 50% win); 24×10 broke 59 twice in a row (59.3 → 59.1, +6.3 above PID; post-event 61.2, non-level 59.0, pre-event 58.1, violations low 12.8%); and 12×5 hit raw 46.2 (first past 46; EMA 46.5 at round 120, 45.9 at round 130), non-level 51.2 (1.0 from PID), pre-event 40.5 EMA / 40.6 raw, violations first below 36% (35.7%), and hidden-pairing 18.5 EMA / 18.1 raw.",
+   "text_zh": "第十阶段第 120–130 轮（5.05 小时，已稳跑至第 135 轮，GPU 利用率 94%、单轮 74–92 秒、零重试，精调门控与在途管道权重较第 80 轮再增 46%/35%）连刷全尺寸大关：48×20 历史首破 65 达 65.2（领先自整定PID 9.0 分；带液位 56.2、事件前 63.7、第 120 轮事件后 67.5、胜率 50%）；24×10 连两测破 59（59.3 → 59.1，领先 PID 6.3 分；事件后 61.2、不带液位 59.0、事件前 58.1、越限率 12.8% 新低）；12×5 第 120 轮实时首破 46 达 46.2（平均 46.5，第 130 轮 45.9）、不带液位 51.2（距 PID 仅差 1.0 分）、事件前 40.5 / 实时 40.6、越限率首破 36% 至 35.7%、盲控创平均 18.5 / 实时 18.1 新高。"
+  },
+  {
+   "date": "2026-11-28 16:43",
+   "tone": "good",
+   "text": "Stage 10 round-80 weights (12×5 47.0, levels 40.0) broke 70 on zero-shot 8-family mechanistic plants for the first time at 70.5 (+8.3 above self-tuning PID 62.2, zero trips: Column A 94.7, BSM1 93.0, Building 74.5, Quadruple tank 73.5, TEP 70.7, pH 62.5, CSTR 50.7, Debutanizer 44.5); refreshed all four dynamic replays (BSM1 91.6, Typical 75.6, TEP 48.1, Level −20.4) and published public open weights to Hugging Face, ModelScope, and GitHub. Meanwhile rounds 90–110 (4.34 h, 95% GPU util, 73–94 s/row) broke all-time highs on 48×20 (64.9, post-event 67.4, pre-event 62.9, round-90 violations low 10.6%), 24×10 (58.8, post-event first past 60 at 60.8, non-level 58.3; round-100 levels first past 60 at 60.7), and 12×5 non-level (51.0 EMA / 50.4 raw; overall 46.4 EMA / 45.4 fifth straight raw climb, hidden-pairing back to 17.0, reversals back down to 30.8%–33.4%).",
+   "text_zh": "第十阶段第 80 轮最佳权重（12×5 47.0、带液位 40.0）在八类工业机理零样本考试中历史首次破 70 达 70.5 分（领先自整定PID 62.2 达 8.3 分、零跳停：精馏塔 A 94.7、BSM1 93.0、建筑供暖 74.5、四水箱 73.5、TEP 70.7、pH 62.5、放热反应釜 50.7、脱丁烷塔 44.5），已同步刷新全部 4 组动态回放（BSM1 91.6、一般装置 75.6、TEP 48.1、带液位 −20.4）并将最新公开权重发布至 Hugging Face、ModelScope 与 GitHub。同步推进的第 90–110 轮（4.34 小时、GPU 利用率 95%、单轮 73–94 秒）连刷全历史纪录：48×20 冲至 64.9 新高（事件后 67.4、事件前 62.9、第 90 轮越限率 10.6% 新低），24×10 追平 58.8（事件后历史首破 60 达 60.8、不带液位 58.3 新高；第 100 轮带液位首破 60 达 60.7），12×5 不带液位创平均 51.0 / 实时 50.4 新高（综合 46.4 / 实时五连涨至 45.4、盲控回升至 17.0、换向率回落至 30.8%–33.4%）。"
+  },
+  {
+   "date": "2026-11-28 15:56",
+   "tone": "good",
+   "text": "Stage 10 rounds 70–80 (3.52 h, compiled GPU engine running at 85%–87% utilization / 395 W / 82.9 s per row / 150 s total validation, zero retries, zero bad samples) surged +1.23 points in 10 rounds to an all-time high of 47.0 (46.99) EMA on 12×5—now just 1.6 points behind self-tuning PID (48.6): integrating levels broke 40 for the first time in project history (40.0), non-level jumped to 50.8 EMA / 50.1 raw, post-event surged to 49.9, pre-event broke 40 for the first time (40.2), win rate vs. PID climbed to 46.5% (46.1% at round 70), violations held at 36.6%, hidden-pairing stood at 17.7, 24×10 rebounded to 57.7 (post-event 59.2), and 48×20 held 63.1–63.7 (non-level 81.3, post-event 67.1).",
+   "text_zh": "第十阶段第 70–80 轮（3.52 小时，编译引擎稳跑 85%–87% GPU 利用率 / 395 W / 单轮 82.9 秒 / 总验证 150 秒、零重试零坏样本）单 10 轮暴涨 1.23 分创 12×5 全历史新高 47.0（46.99），距自整定PID（48.6）仅差 1.6 分：带液位历史首破 40 达 40.0、不带液位飙至平均 50.8 / 实时 50.1、事件后冲至 49.9、事件前历史首破 40 达 40.2、对 PID 胜率创 46.5% 新高（第 70 轮 46.1%）、越限率 36.6%、盲控 17.7；24×10 回升至 57.7（事件后 59.2），48×20 稳在 63.1–63.7（不带液位 81.3、事件后 67.1）。"
+  },
+  {
+   "date": "2026-11-28 15:26",
+   "tone": "good",
+   "text": "Stage 10 rounds 50–60 (2.86 h, zero stalls) set new all-time highs on 12×5: EMA reached 45.52 with non-level breaking 50 for the first time in project history (50.0), post-event hitting 48.6, win rate vs. self-tuning PID reaching 44.9%, valve reversals dropping to 29.1% / 24.8% (24×10 at 58.4) / 23.7% (48×20 at 62.6), and round-50 hidden-pairing breaking 18 on EMA for the first time (18.2, 4.7× Stage 8; violations 36.5% EMA / 35.4% raw). Immediately afterward, rolled out a verified GPU engine upgrade (vectorized lagged attention, cached rotary tables, zero inner-loop GPU-CPU syncs, TF32 + inference bfloat16, and Triton compilation) seamlessly resuming from round 62: Blackwell GPU utilization jumped from 42% → 75%–94% (bandwidth 15% → 42%–59%, power 200 W → 335 W), cutting row time from 148 s → 74–87 s (~2× faster) and validation time 3.65× (98 s → 27 s).",
+   "text_zh": "第十阶段第 50–60 轮（2.86 小时、零卡顿）再创多项 12×5 全历史纪录：第 60 轮平均权重达 45.52，不带液位历史首次突破 50（50.0）、事件后创 48.6 新高、对自整定PID 胜率达 44.9%，全尺寸阀门换向率降至 29.1% / 24.8%（24×10 58.4）/ 23.7%（48×20 62.6）；第 50 轮盲控平均历史首次破 18 达 18.2（第八阶段 4.7 倍），越限率降至 36.5% 平均 / 35.4% 实时新低。随后于第 62 轮无缝热升级底层训练引擎（滞后注意力向量化、旋转编码缓存、清零内循环同步、TF32 与推理半精度及 Triton 算子编译）：GPU 利用率由 42% 跃升至 75%–94%（带宽 15% → 42%–59%、功耗 200 W → 335 W），单轮耗时从 148 秒压至 74–87 秒（提速约 2 倍），验证提速 3.65 倍（98 秒 → 27 秒）。"
+  },
+  {
+   "date": "2026-11-28 14:12",
+   "tone": "good",
+   "text": "Zero-shot 8-family mechanistic industrial exam on Stage 10 round 30 weights (64 episodes, zero trips, never trained on mechanistic plants) surged +5.5 points to an all-time high of 69.8 (+7.6 above self-tuning PID 62.2): Distillation column A 94.0 (+12.8 above static-model MPC 81.2), BSM1 92.5, Building heating 75.2 (+7.8), Quadruple tank 71.6 (+10.3, flipping +5.1 ahead of PID), TEP 69.6 (+2.7), pH neutralisation 59.5 (+9.2, +19.2 ahead of PID), Debutanizer 44.1 (+6.9), Exothermic CSTR 51.8. Meanwhile, Stage 10 round 40 (1.88 h, 89.3 GB peak, zero stalls) held 12×5 above 45 for the second straight test (45.3 EMA / 45.3 raw) and set four new EMA records: hidden-pairing first past 17 at 17.3 (4.4× Stage 8), win rate vs. PID 43.8%, violations down to 36.6%, and pre-event 39.3, while integrating levels rose to 38.2 (24×10 57.6, 48×20 dipped transiently to 61.2).",
+   "text_zh": "第十阶段第 30 轮权重完成八类工业机理零样本配对考核（64 回合零跳停、全程未训练机理装置），平均分暴涨 5.5 分创 69.8 全历史新高（领先自整定PID 62.2 达 7.6 分）：精馏塔 A 达 94.0（超静态模型MPC 81.2 达 12.8 分）、BSM1 92.5、建筑供暖 75.2（+7.8）、四水箱 71.6（+10.3，反超 PID 5.1 分）、TEP 69.6（+2.7）、pH 中和 59.5（+9.2，领先 PID 19.2 分）、脱丁烷塔 44.1（+6.9）、放热 CSTR 51.8。同步推进的第十阶段第 40 轮（1.88 小时、峰值显存 89.3 GB 零卡顿）使 12×5 连续两测稳在 45 以上（平均 45.3 / 实时 45.3），再创四项平均新高：盲控首破 17 达 17.3（第八阶段 4.4 倍）、对 PID 胜率 43.8%、越限率降至 36.6%、事件前 39.3，带液位连涨至 38.2（24×10 57.6，48×20 短暂回撤至 61.2）。"
+  },
+  {
+   "date": "2026-11-28 13:36",
+   "tone": "good",
+   "text": "Stage 10 rounds 20–30 (1.40 h, 89.3 GB peak memory, zero stalls, critic explained variance 83.7%) broke 45 on 12×5 moving-average score for the first time in project history at 45.44 EMA / 45.38 raw (+1.28 in 84 min): non-level hit a record 49.7, levels hit 37.6 EMA / 38.5 raw, post-event broke 48 on EMA at 48.4 (48.5 raw), hidden-pairing hit a record 16.7 EMA (4.3× Stage 8), win rate vs. self-tuning PID hit 43.4%, and violations dropped below 37% on EMA for the first time at 36.9% (36.0% raw at round 20). Larger batches hit an all-time high of 58.8 on 24×10 (+5.8 above PID at round 20; 58.2 at round 30) and held 64.2 on 48×20 twice in a row (post-event record 67.2 at round 20, pre-event record 62.1 at round 30, 10.9%–11.1% violations). A 64-plant offline audit of round 23 confirmed 45+-step dead-time plants surged +4.0 points (33.3 → 37.3) and levels jumped +4.9 points (40.5 → 45.4) vs. Stage 9 best.",
+   "text_zh": "第十阶段第 20–30 轮（1.40 小时、峰值显存 89.3 GB 零卡顿、特权价值网络解释方差 83.7%）使 12×5 平均权重历史首次实破 45 达 45.44（实时 45.38，84 分钟净涨 1.28 分）：不带液位创 49.7 新高，带液位达平均 37.6 / 实时首破 38 达 38.5，事件后平均首破 48 达 48.4（实时 48.5），盲控创平均 16.7 新高（第八阶段 4.3 倍），对自整定PID 胜率创 43.4% 新高，越限率平均首破 37% 降至 36.9%（第 20 轮实时 36.0%）。大尺寸批同步刷新纪录：第 20 轮 24×10 创 58.8 新高（领先 PID 5.8 分；第 30 轮 58.2），48×20 连续两测达 64.2（第 20 轮事件后创 67.2 新高、第 30 轮事件前创 62.1 新高，越限率 10.9%–11.1%）。第 23 轮 64 台离线剖析证实，≥45 步长纯滞后较第九阶段最佳权重已净涨 4.0 分（33.3 → 37.3），带液位净涨 4.9 分（40.5 → 45.4）。"
+  },
+  {
+   "date": "2026-11-28 12:53",
+   "tone": "good",
+   "text": "Stage 10 round 10 (just 25 min in, 89.3 GB peak memory across 48×20 with zero stalls) broke all-time records immediately: 24×10 hit a record 58.2 (+5.2 above self-tuning PID, first-ever 50.0% win rate vs. PID, post-event first past 59 at 59.5), 12×5 jumped +0.68 to a new all-time high of 44.84 EMA / 44.81 raw (non-level EMA first past 49 at 49.5, post-event EMA record 47.7 / raw 47.8, win rate 42.6% EMA / 43.0% raw, hidden-pairing 15.5), 48×20 hit 63.7 (50.0% win rate vs. PID, pre-event record 62.0), unpublished-coupling detection jumped to 75.5% by round 3 (beating Stage 9's 230-round 73.0% peak), and all new precision-gate, in-flight pipe, and physical-gain weights are growing cleanly.",
+   "text_zh": "第十阶段第 10 轮（开训仅 25 分钟、含 48×20 峰值显存 89.3 GB 零卡顿）首测即破多项全历史纪录：24×10 创 58.2 新高（领先自整定PID 5.2 分、历史首次达成 50.0% 胜率、事件后首破 59 达 59.5），12×5 净涨 0.68 分创 44.84 全历史新高（实时 44.81；不带液位平均首破 49 达 49.5、事件后平均创 47.7 / 实时 47.8 新高、胜率 42.6% / 实时 43.0%、盲控 15.5），48×20 达 63.7（对 PID 胜率 50.0%、事件前创 62.0 新高），第 3 轮未告知耦合检测即冲至 75.5%（超第九阶段 230 轮 73.0% 上限），精调门控、在途管道与物理增益新权重均已顺畅生长。"
+  },
+  {
+   "date": "2026-11-28 12:00",
+   "tone": "good",
+   "text": "Stage 9 wrapped up at round 230 (11.05 h, zero stalls) after pushing hidden-pairing past 16 EMA (16.2) and 17 raw (17.2, 4.4× Stage 8), setting 12×5 lows on constraint violations (37.5% EMA / 37.3% raw) and highs on win rate vs. PID (42.6% EMA / 43.0% raw), closing large batches at 57.8 (24×10) and 63.8 (48×20, post-event record 66.5), and publishing round-160 best weights (12×5 44.8 / 45.3 raw, zero-shot 8-family mechanistic record 64.3, refreshed replays) to Hugging Face and ModelScope. Hot-switched live on the 96 GB GPU to Stage 10 via bit-identical step-0 warm-start: adds 4 physical gain-sensitivity features, 8-scale in-flight pipe Neural Smith Predictor, a 3-decade multiplicative precision gate (+0.015% params, zero extra state), a 75-param training-only gain probe, and sensitivity-scaled 0.02 move noise.",
+   "text_zh": "第九阶段于第 230 轮（11.05 小时、零卡顿）收官：末段将盲控推至平均首破 16（16.2）与实时首破 17（17.2，第八阶段 4.4 倍），12×5 越限率创 37.5% 平均 / 37.3% 实时新低、对 PID 胜率创 42.6% 平均 / 43.0% 实时新高，大尺寸批收官 24×10 57.8、48×20 63.8（事件后创 66.5 新高），已将第 160 轮最佳权重（12×5 44.8 / 实时 45.3，八类机理零样本 64.3 及刷新回放）同步发布至 Hugging Face 与 ModelScope。现已在 96 GB GPU 原地逐位恒等热切换至第十阶段：上线 4 项物理增益灵敏度特征、8 尺度在途管道神经网络版 Smith 预测器、跨三数量级微幅精调门控（参数仅增 0.015%、零额外状态）、仅训练期 75 参数增益探针与灵敏度缩放 0.02 轻噪声。"
+  },
+  {
+   "date": "2026-11-28 10:47",
+   "tone": "good",
+   "text": "Stage 9 rounds 190–200 (10.05 h, 88.5 GB peak memory, zero stalls, 63% cosine elapsed) broke 15 on EMA hidden-pairing for the first time (round-200 EMA 15.8 / raw 15.2, 4.1× Stage 8), lifted 12×5 non-level EMA to a record 48.9 (round 190 overall 44.6, 42.2% win rate vs. PID; round 200 at 44.3 EMA / 44.5 raw), pushed 48×20 non-level (81.8) and post-event (66.1) to new highs (overall 63.3–63.4), and tied 24×10's all-time low 12.9% violations (overall 57.0). Offline zero-shot 8-family mechanistic evaluation on round-160 weights (64 episodes, zero trips) rose to a record 64.3 (+2.1 above self-tuning PID 62.2): Distillation column A 86.5 (+5.3 above static-model MPC), TEP 66.9, Exothermic CSTR 53.0, pH 50.3, and Debutanizer 37.2 (+8.3).",
+   "text_zh": "第九阶段第 190–200 轮（10.05 小时、峰值显存 88.5 GB 零卡顿、余弦退火 63%）不告知配对盲控平均权重历史首破 15（第 200 轮平均 15.8 / 实时 15.2，第八阶段 4.1 倍），12×5 不带液位平均创 48.9 新高（第 190 轮综合 44.6、对 PID 胜率 42.2%；第 200 轮平均 44.3 / 实时 44.5），48×20 不带液位（81.8）与事件后（66.1）齐创新高（综合 63.3–63.4），24×10 越限率追平 12.9% 历史新低（综合 57.0）。同期离线复测第 160 轮八类工业机理零样本（64 回合零跳停）创 64.3 全历史新高（领先自整定PID 2.1 分）：精馏塔 A 86.5（超静态模型MPC 5.3 分）、TEP 66.9、放热 CSTR 53.0、pH 50.3、脱丁烷塔 37.2（+8.3）。"
+  },
+  {
+   "date": "2026-11-28 09:46",
+   "tone": "good",
+   "text": "Stage 9 rounds 170–180 (9.04 h, 88.5 GB peak memory, zero stalls, 56% cosine elapsed) broke 16 on hidden-pairing control for the first time (round-170 raw 16.1, 4.1× Stage 8; round-180 raw 15.0 / EMA 14.5) and lifted unpublished-coupling presence detection to a record 73.0% at round 173, with 1-hop valve decoupling weights up 8.2× since round 10. Larger unseen batches rebounded to 57.5 on 24×10 (48.4% win rate vs. PID; round 180 at 57.1) and 63.5 on 48×20 (round-180 non-level 81.1, violations 11.1%–11.3%). On 12×5, round 170 held 44.5 EMA with a record-low episode cost and round 180 dipped briefly to 43.9 EMA while raw weights already rebounded to 44.2 (stage best remains round 160 at 44.8 EMA / 45.3 raw).",
+   "text_zh": "第九阶段第 170–180 轮（9.04 小时、峰值显存 88.5 GB 零卡顿、余弦退火 56%）不告知配对盲控历史首破 16（第 170 轮实时 16.1、第八阶段 4.1 倍；第 180 轮实时 15.0 / 平均 14.5），第 173 轮未告知耦合存在性检测创 73.0% 新高，1 跳阀门解耦权重较第 10 轮放大 8.2 倍。大尺寸批回升至 24×10 57.5（对自整定PID 胜率 48.4%，第 180 轮 57.1）与 48×20 63.5（第 180 轮不带液位 81.1、越限率 11.1%–11.3%）。12×5 第 170 轮稳在平均 44.5 且代价创新低，第 180 轮平均回撤至 43.9 但实时已反弹回 44.2（阶段最高仍为第 160 轮平均 44.8 / 实时 45.3）。"
+  },
+  {
+   "date": "2026-11-28 08:48",
+   "tone": "good",
+   "text": "Stage 9 round 160 (7.67 h, 88.5 GB peak memory, zero stalls, 50% cosine elapsed) extended the 12×5 streak to six straight all-time highs at 44.8 EMA (+3.4 above Stage 8) while raw weights broke 45 for the first time in project history at 45.3 (non-level raw first past 49 at 49.3, post-event raw first past 48 at 48.0, hidden-pairing raw record 14.8; EMA pre-event first past 39 at 39.1 and post-event record 47.3). Larger unseen batches held 55.8 on 24×10 and 63.0 on 48×20 (non-level 80.2, 50.0% win rate vs. PID); step-by-step trajectory diagnostics pinned down high-gain silence integration on 55-step dead-time loops as the exact target for Stage 10.",
+   "text_zh": "第九阶段第 160 轮（7.67 小时、峰值显存 88.5 GB 零卡顿、余弦退火过半）实现 12×5 连续六测创历史新高至平均 44.8（超第八阶段 3.4 分），实时权重历史首次突破 45 达 45.3（不带液位实时首破 49 达 49.3、事件后实时首破 48 达 48.0、盲控实时创 14.8 新高；事件前平均首破 39 达 39.1、事件后平均创 47.3 新高）。大尺寸批 24×10 稳在 55.8、48×20 稳在 63.0（不带液位 80.2、对 PID 胜率 50.0%）；逐拍轨迹诊断已精准定位高增益 55 步纯滞后静默积分过冲问题，作为第十阶段升级目标。"
+  },
+  {
+   "date": "2026-11-28 08:15",
+   "tone": "good",
+   "text": "Stage 9 rounds 140–150 (7.18 h, 88.5 GB peak memory, zero stalls, 47% cosine elapsed) extended the 12×5 streak to five straight all-time highs at 44.5 EMA / 44.6 round-140 raw (+3.1 above Stage 8): integrating levels broke 39 for the first time at 39.1 (+4.4 in Stage 9, just 2.9 behind self-tuning PID 42.0), post-event hit a record 47.2, EMA win rate vs. PID hit 42.2%, hidden-pairing reached a record 14.9 EMA / 14.6 raw (3.8× Stage 8), 24×10 win rate vs. PID surged to a record 48.4%, probe loss hit a low of 1.267, and zero-shot debutanizer jumped organically from 28.9 (round 60) to 40.0 (round 140).",
+   "text_zh": "第九阶段第 140–150 轮（7.18 小时、峰值显存 88.5 GB 零卡顿、余弦退火 47%）实现 12×5 连续五测创历史新高至平均 44.5 / 第 140 轮实时 44.6（超第八阶段 3.1 分）：带液位历史首破 39 达 39.1（本阶段净涨 4.4 分、距自整定PID 42.0 仅差 2.9 分），事件后创 47.2 新高，平均对 PID 胜率达 42.2%，盲控创平均 14.9 / 实时 14.6 新高（第八阶段 3.8 倍），24×10 对 PID 胜率冲至 48.4% 新高，未告知探针损失降至 1.267 新低，脱丁烷塔零样本自发从第 60 轮 28.9 涨至第 140 轮 40.0。"
+  },
+  {
+   "date": "2026-11-28 07:15",
+   "tone": "good",
+   "text": "Stage 9 rounds 120–130 (6.21 h, 88.5 GB peak memory, zero stalls) extended the 12×5 streak to three straight all-time highs at 44.2 (44.15 → 44.17; non-level record 48.6, pre-event first past 38 at 38.4 raw, post-event 46.9), lifted hidden-pairing to a record 14.6 at round 120 (3.7× Stage 8), pushed 24×10 win rate vs. self-tuning PID to a record 45.3% (57.6 overall), and lowered 48×20 constraint violations to an all-time low of 10.8% (63.8 overall).",
+   "text_zh": "第九阶段第 120–130 轮（6.21 小时、峰值显存 88.5 GB 零卡顿）实现 12×5 连续三测创历史新高至 44.2（44.15 → 44.17；不带液位创 48.6 新高、事件前实时首破 38 达 38.4、事件后 46.9），第 120 轮盲控创 14.6 新高（第八阶段 3.7 倍），24×10 对自整定PID 胜率创 45.3% 新高（综合 57.6），48×20 越限率再创 10.8% 历史新低（综合 63.8）。"
+  },
+  {
+   "date": "2026-11-28 06:15",
+   "tone": "good",
+   "text": "Stage 9 rounds 100–110 (5.24 h, 88.5 GB peak memory, zero stalls) broke records across every benchmark: 12×5 hit 44.1 EMA / 44.2 raw (non-level first past 48 at 48.4 / 48.6 raw, post-event first past 47 at 47.1 / 47.5 raw, raw win rate vs. self-tuning PID 44.5%), hidden-pairing crossed 14 at 14.3 EMA / 13.8 raw (3.7× Stage 8), 24×10 hit 58.0 (+5.0 above PID; non-level 58.2, violations first below 13% at 12.9%), and 48×20 held 63.7–63.8. A 64-plant audit confirmed 10–24-step plants lead PID by +8.0 (67.6 vs. 59.5), while 45+-step extreme dead times account for 55.7% of the remaining 12×5 loss gap.",
+   "text_zh": "第九阶段第 100–110 轮（5.24 小时、峰值显存 88.5 GB 零卡顿）再刷全线历史纪录：12×5 创平均 44.1 / 实时 44.2 新高（不带液位历史首破 48 达 48.4 / 实时 48.6、事件后首破 47 达 47.1 / 实时 47.5、实时对自整定PID 胜率冲至 44.5%），不告知配对盲控首破 14 达平均 14.3 / 实时 13.8（第八阶段 3.7 倍），24×10 触及 58.0（领先 PID 5.0 分；不带液位 58.2、越限率首破 13% 降至 12.9%），48×20 稳在 63.7–63.8。64 台剖析证实 10–24 步中滞后已领先 PID 8.0 分，剩余 55.7% 丢分集中在 ≥45 步超大纯滞后。"
+  },
+  {
+   "date": "2026-11-28 05:15",
+   "tone": "good",
+   "text": "Stage 9 rounds 80–90 (4.28 h, 88.5 GB peak memory, zero stalls) shattered large-scale, hidden-pairing, and violation records: 48×20 jumped to 64.6 (+8.4 above self-tuning PID; levels 55.5, constraint violations first below 11% at 10.8%), 24×10 climbed twice to 57.4 → 57.9 (+4.9 above PID; levels 59.2, violations 13.3%), hidden-pairing climbed twice to 13.0 → 13.8 (3.5× Stage 8), and 12×5 hit a record-low 37.6% violation share (overall 43.1, non-level 47.4; stage best remains 44.0 at round 70).",
+   "text_zh": "第九阶段第 80–90 轮（4.28 小时、峰值显存 88.5 GB 零卡顿）刷新大尺寸、盲控与越限率多项历史纪录：48×20 跃升至 64.6（领先自整定PID 8.4 分；带液位 55.5、越限率历史首破 11% 降至 10.8%），24×10 两连涨达 57.4 → 57.9（领先 PID 4.9 分；带液位 59.2、越限率 13.3%），不告知配对盲控两连涨至 13.0 → 13.8（第八阶段的 3.5 倍），12×5 越限率创 37.6% 新低（综合 43.1、不带液位 47.4；阶段最高仍为第 70 轮 44.0）。"
+  },
+  {
+   "date": "2026-11-28 04:15",
+   "tone": "good",
+   "text": "Stage 9 round 70 (3.31 h, 88.5 GB peak memory, zero stalls) surged to 44.0 on 12×5 (+2.5 above Stage 8; raw 43.5): integrating levels leaped +2.8 points in 10 rounds to an all-time high of 38.3 (only 3.7 behind self-tuning PID 42.0), post-disturbance recovery hit a record 46.9, win rate vs. self-tuning PID hit a record 41.4%, hidden-pairing matched its 12.1 high, 24×10 held above 56 at 56.1, 48×20 held 63.2, and unpublished-coupling detection hit a record 72.2% (probe loss 1.270).",
+   "text_zh": "第九阶段第 70 轮（3.31 小时、峰值显存 88.5 GB 零卡顿）冲破 44 达 44.0 分（超第八阶段峰值 2.5 分；实时 43.5）：带液位单 10 轮暴涨 2.8 分创 38.3 历史新高（距自整定PID 42.0 仅差 3.7 分），事件后恢复创 46.9 新高，对自整定PID 胜率创 41.4% 新高，不告知配对稳在 12.1 最高位，24×10 站稳 56.1，48×20 稳在 63.2，未告知耦合存在性检测率创 72.2% 新高（探针损失 1.270 新低）。"
+  },
+  {
+   "date": "2026-11-28 04:05",
+   "tone": "good",
+   "text": "Stage 9 round 60 (2.83 h, 88.5 GB peak memory, zero stalls) smashed every benchmark and triggered a full release refresh: 12×5 surged to 43.4 EMA / 43.5 raw (non-level 47.8, post-event 46.4, hidden-pairing 10.4), 24×10 broke 56 at 56.5 (levels 57.6, violations 13.6%), and 48×20 hit 63.3 (53.1% win rate vs. PID). Zero-shot evaluation across all 8 mechanistic industrial plant families (64 episodes, 0 trips, never trained on mechanistic plants) jumped +6.0 points to 63.5 — surpassing self-tuning PID (62.2) for the first time and winning 5 of 8 families (BSM1 94.2, Column A 82.1, Building 71.5, Quadruple tank 71.4, pH 48.0, TEP 63.5); refreshed all four dynamic replays (BSM1 97.4, Typical 78.6, TEP 61.1, Level −24.2) and updated public open weights on Hugging Face and ModelScope.",
+   "text_zh": "第九阶段第 60 轮（2.83 小时、峰值显存 88.5 GB 零卡顿）全面破纪录并完成全平台刷新：12×5 飙升至平均 43.4 / 实时 43.5（不带液位 47.8、事件后 46.4、盲控 10.4），24×10 首破 56 达 56.5（带液位 57.6、越限率 13.6%），48×20 达 63.3（对自整定PID 胜率 53.1%）。同份权重零样本考核八类经典工业机理装置（64 回合零跳停、全程未训练机理装置）大涨 6.0 分达 63.5，历史首次超越自整定PID（62.2）并在 8 类中赢下 5 类（BSM1 94.2、精馏塔 A 82.1、建筑供暖 71.5、四水箱 71.4、pH 48.0、TEP 63.5）；已同步刷新全部四组动态回放（BSM1 97.4、一般装置 78.6、TEP 61.1、带液位 −24.2）及 Hugging Face / ModelScope 开源权重。"
+  },
+  {
+   "date": "2026-11-28 03:15",
+   "tone": "good",
+   "text": "Stage 9 round 50 (2.34 h, 88.5 GB peak memory with zero stalls) shattered double digits on hidden-pairing control at 12.1 EMA / 12.1 raw (3.1× Stage 8's 70-round ceiling, five straight gains from 3.9), set all-time lows on 12×5 valve reversals (27.8%) and constraint violations (37.8% on 12×5, 11.2% on 48×20), lifted 48×20 levels to a record 53.9 (overall 63.2; 12×5 held 42.1), and pushed unpublished-coupling sign accuracy to a record 65.5% with 1-hop decoupling weights accelerating (3.8× round 10).",
+   "text_zh": "第九阶段第 50 轮（2.34 小时、峰值显存 88.5 GB 零卡顿）不告知配对盲控一举冲破两位数达平均 12.1 / 实时 12.1 分（第八阶段 70 轮上限的 3.1 倍，自 3.9 起五连涨），12×5 阀门换向率（27.8%）与越限率（37.8%）及 48×20 越限率（11.2%）齐创历史新低，48×20 带液位创 53.9 新高（合计 63.2；12×5 稳在 42.1），未告知耦合全配对方向辨识率创 65.5% 新高且 1 跳解耦权重加速生长（第 10 轮的 3.8 倍）。"
+  },
+  {
+   "date": "2026-11-28 02:38",
+   "tone": "good",
+   "text": "Stage 9 rounds 30–40 (1.86 h, 88.5 GB peak memory with zero stalls) set records across every size: round-30 raw 12×5 broke 43 for the first time at 43.0 (post-event 46.2, levels 37.4; round-40 EMA 42.2 / raw 42.4), hidden-pairing climbed every evaluation to 9.6 EMA, 24×10 hit an all-time high of 55.7 (levels first past 56 at 56.1), and 48×20 reached 63.2 (non-level record 81.7, constraint violations 11.2%, beating self-tuning PID on 56.3% of plants). A 64-plant audit verified online primary-coupling sign identification reached 81.9% (told) and 70.0% (blind) by step 128, with all 12 layers' DeltaNet biases up 3.3× since round 10.",
+   "text_zh": "第九阶段第 30–40 轮（1.86 小时、峰值显存 88.5 GB 零卡顿）全尺寸再创新高：第 30 轮 12×5 实时权重历史首破 43 达 43.0 分（事件后 46.2、带液位 37.4；第 40 轮平均 42.2 / 实时 42.4），不告知配对连续四测单调爬升至平均 9.6 分，24×10 创 55.7 新高（带液位首破 56 达 56.1），48×20 达 63.2（不带液位创 81.7 新高、越限率 11.2%、对自整定PID 胜率创 56.3% 新高）。64 台剖析证实第 128 步主耦合方向在线辨识率达 81.9%（常规）/ 70.0%（盲控），12 层 DeltaNet 偏置较第 10 轮已放大 3.3 倍。"
+  },
+  {
+   "date": "2026-11-28 01:44",
+   "tone": "good",
+   "text": "Stage 9 round 20 (50 min, 88.5 GB peak memory with zero stalls) accelerated sharply across every metric: 12×5 jumped +0.9 to an all-time high of 42.7 EMA / 42.3 raw (non-level first past 46 at 46.4, levels first past 36 at 36.2 raw / 35.9 EMA, post-event 44.9, violations down to 38.2% raw), hidden-pairing surged 2.5× from stage start to 8.3 EMA / 9.7 raw, 24×10 tied its record at 55.6, 48×20 held 62.9, and unpublished-pair detection crossed 70% (64% sign on 12×5).",
+   "text_zh": "第九阶段第 20 轮（仅 50 分钟、峰值显存 88.5 GB 零卡顿）全面加速暴涨：12×5 单次猛涨 0.9 分创全历史新高 42.7（实时 42.3；不带液位首破 46 达 46.4、带液位实时首破 36 达 36.2 / 平均 35.9、事件后 44.9、越限率实时降至 38.2%），不告知配对较本阶段起点翻升 2.5 倍达平均 8.3 / 实时 9.7，24×10 追平历史最高 55.6，48×20 稳在 62.9，未告知耦合存在性检测破七成（12×5 方向辨识达 64%）。"
+  },
+  {
+   "date": "2026-11-28 01:15",
+   "tone": "good",
+   "text": "Stage 9 round 10 (25 min, 88.5 GB peak memory with zero stalls) broke all-time records across the board: 12×5 reached 41.8 EMA / 42.0 raw (first past 42; levels 35.0 raw, non-level 45.9, post-event 44.1 raw, win rate vs. self-tuning PID 41.0%), hidden-pairing surged +63% from 3.9 to 5.5 EMA / 6.3 raw (breaking Stage 8's 70-round 4.2 ceiling), 48×20 jumped to 63.4 (levels 53.8, non-level 80.8, 50% win rate vs. PID, violations down to 11.2%), and unpublished-coupling identification climbed from 49% random to 63% sign / 68% presence with all 12 layers' new DeltaNet routing weights growing cleanly.",
+   "text_zh": "第九阶段第 10 轮（仅 25 分钟、峰值显存 88.5 GB 且零卡顿）全线刷新历史纪录：12×5 达平均权重 41.8 / 实时权重 42.0 分（首次破 42；带液位实时权重 35.0、不带液位 45.9、事件后 44.1、对自整定PID 胜率首破四成达 41.0%），不告知配对从 3.9 猛涨 63% 至平均权重 5.5 / 实时权重 6.3 分（彻底打破第八阶段 70 轮 4.2 分上限），48×20 冲至 63.4 分（带液位 53.8、不带液位 80.8、对 PID 胜率 50%、越限率降至 11.2%），未告知跨通道耦合辨识率从 49% 随机跃升至 63% 方向 / 68% 存在性，全部 12 层新增 DeltaNet 权重生长顺畅。"
+  },
+  {
+   "date": "2026-11-28 00:36",
+   "tone": "good",
+   "text": "Stage 8 wrapped up at round 72 with new all-time highs on 12×5 (41.5 EMA / 41.2 raw, post-event 43.7, win rate vs. PID 39.8%, levels 35.3), 24×10 non-level (56.0, overall 55.5), and 48×20 (62.7). Hot-switched on the fresh 96 GB GPU to Stage 9 from the 41.5 best checkpoint, upgrading to multi-scale causal state-space + Gated DeltaNet pairwise memory feeding all 12 layers' channel & delay attention plus 1-hop decoupling messages (+0.15% params), with a training-only 42-param unpublished-pair probe.",
+   "text_zh": "第八阶段跑至第 72 轮收官，留下 12×5（平均权重 41.5 / 实时权重 41.2、事件后 43.7、对自整定PID 胜率 39.8%、带液位 35.3）、24×10 不带液位（56.0，合计 55.5）与 48×20（62.7）多项历史新高。现已在全新 96 GB GPU 上承接 41.5 分最佳权重无缝切入第九阶段，上线多尺度因果状态空间 + Gated DeltaNet 成对联想记忆（注入全部 12 层通道与滞后注意力并直连 1 跳多变量解耦，仅增 0.15% 参数）及仅训练期 42 参数未告知配对探针。"
+  },
+  {
+   "date": "2026-11-28 00:08",
+   "tone": "good",
+   "text": "Resumed Stage 8 cleanly from round 66 on a fresh 96 GB GPU after a local sleep pause. A 64-plant audit of round 60 confirmed short-delay plants (<10 steps) surpassed self-tuning PID (50.5 vs. 49.9, +2.9), integrating levels gained +2.0, and post-128-step out-of-band error fell 1.2%–1.8%; it also revealed that unpublished off-diagonal & constraint couplings carry 65.5% of total plant gain, motivating a multi-scale Delta-rule pairwise memory that lifted offline unseen sign identification from 49% to 74%–87%.",
+   "text_zh": "本机休眠后已自动切至全新 96 GB GPU 从第 66 轮无缝续训。第 60 轮 64 台剖析证实短滞后（<10 步）反超自整定PID（50.5 vs 49.9，+2.9 分）、带液位涨 2.0 分、128 步后越限率降 1.2%–1.8%；同时查明未告知跨通道与约束耦合占全装置总增益的 65.5%，离线验证纯神经多尺度 Delta 规则成对记忆可将未见装置正反作用辨识率从 49% 提至 74%–87%。"
+  },
+  {
+   "date": "2026-11-27 17:45",
+   "tone": "good",
+   "text": "Stage 8 round 60 (2.66 h, 712 updates; 20 rounds after waking the 16/36/48-step delay channels): 12×5 surged to a new all-time high of 41.5 (raw 41.0; post-disturbance recovery hit a record 43.7; win rate vs. self-tuning PID hit 39.5%; non-level 45.1, levels 34.8, hidden-pairing raw 4.3), and 24×10 rebounded to 55.3 with a record-low 13.7% constraint violation share.",
+   "text_zh": "第八阶段第 60 轮（2.66 小时、712 次更新，唤醒 16/36/48 步滞后通道后第 20 轮）：12×5 综合分飙升至历史新高 41.5 分（实时权重达 41.0、事件后恢复创 43.7 新高、对自整定PID 胜率升至 39.5%、不带液位 45.1、带液位 34.8、不告知配对实时权重升至 4.3），24×10 回升至 55.3 分且越限占比创 13.7% 新低。"
+  },
+  {
+   "date": "2026-11-27 17:20",
+   "tone": "good",
+   "text": "Stage 8 round 50 (first evaluation after waking up the 16/36/48-step delay channels): 12×5 integrating levels jumped +1.2 points to an all-time high of 35.3 (first time past 35; pre-event score hit a record 36.8, overall 40.9), and all three new memory/delay modules are growing rapidly.",
+   "text_zh": "第八阶段第 50 轮（唤醒 16/36/48 步滞后通道后首测）：12×5 带液位单次猛涨 1.2 分创历史新高 35.3 分（历史上首次突破 35；事件前得分 36.8 创新高，综合 40.9），三项新增记忆与滞后模块均已全速生长。"
+  },
+  {
+   "date": "2026-11-27 16:43",
+   "tone": "good",
+   "text": "Stage 8 round 40 (1.75 h, 473 updates, 89.0 GB peak memory with zero stalls) set new all-time records on 12×5 (41.0 overall, levels first past 34 at 34.1, round-30 non-level 45.3, valve reversals down to 29.9%), 48×20 (62.7 overall, levels 52.8, constraint violations down to 11.3%, +6.5 points above self-tuning PID), and privileged critic explained variance (87.6%). Raw weight inspection also caught 55× softmax gradient starvation on the −4.5 cold-started 16/36/48-step delay biases; replaced cold-start with log-linear interpolation across neighboring trained delays (+0.84 points zero-shot on 32 unseen plants, 42× stronger gradients) and seamlessly woke all three channels at round 40.",
+   "text_zh": "第八阶段第 40 轮（1.75 小时、473 次更新，峰值显存 89.0 GB 且零卡顿）刷新多项全历史新高：12×5 综合 41.0 分（带液位历史首破 34 达 34.1 分、第 30 轮不带液位创 45.3 分新高、阀门来回换向率降至 29.9%）、48×20 达 62.7 分（带液位 52.8 分、越限率降至 11.3% 新低，领先自整定PID 6.5 分），256 步特权价值网络解释方差升至 87.6%。同期原始权重检查定位到 16/36/48 步新滞后通道因 −4.5 冷启导致梯度衰减 55 倍；已改为邻近滞后对数时间线性插值（32 台未见装置零样本直接多拿 0.84 分、梯度放大 42 倍），并在第 40 轮完成无损热唤醒继续训练。"
+  },
+  {
+   "date": "2026-11-27 14:48",
+   "tone": "good",
+   "text": "Stage 7 wrapped up 120 rounds (4.8 h, 1,434 updates) with new highs on 12×5 non-level plants (45.2), constraint adherence (37.8% violation share), win rate vs. self-tuning PID (39.1%), and 48×20 non-level plants (80.7, overall 62.2), while confirming six straight evaluations flat at 40.3–41.0. Switched live on the 96 GB GPU to Stage 8 from the 41.0 best checkpoint (and its warm 256-step privileged critic), adding dense 1–64-step lag attention, Layer-0 memory feedback, 12-layer pairwise cross-correlation memory (+0.06% params), balanced per-plant gradients, and stronger reversal-only smoothing.",
+   "text_zh": "第七阶段完成 120 轮（4.8 小时、1,434 次更新），刷新 12×5 不带液位（45.2 分）、约束越限占比（降至 37.8%）、对自整定PID 胜率（39.1%）及 48×20 不带液位（80.7 分，合计 62.2 分）纪录，同时确认综合分连续六次盘整在 40.3–41.0 分。现已在现役 96 GB GPU 上承接 41.0 分最佳权重与已收敛的 256 步特权价值网络无缝切入第八阶段：升级覆盖 1 至 64 步的致密滞后注意力、输入层长时记忆回馈、12 层成对关联记忆（仅增 0.06% 参数），并强化难控装置梯度平衡与反向防抖平滑。"
+  },
+  {
+   "date": "2026-11-27 13:35",
+   "tone": "good",
+   "text": "Stage 7 rounds 80–90 (3.6 h, 1,074 updates): 12×5 reached an all-time high of 41.0 (non-level first past 45 at 45.1, post-event 43.2, levels 33.4, hidden-pairing 4.9), round 80 lifted 24×10 to a record 55.6 (above self-tuning PID 53.0), 48×20 held 61.6 (non-level 80.0), and the 256-step privileged critic reached 85.6% explained variance.",
+   "text_zh": "第七阶段第 80–90 轮（3.6 小时、1,074 次更新）：12×5 创全历史新高 41.0 分（不带液位首次突破 45 达 45.1 分、事件后 43.2 分、带液位 33.4 分、不告知配对 4.9 分）；第 80 轮把 24×10 推至历史新高 55.6 分（领先自整定PID 参照 53.0 分）；48×20 稳在 61.6 分（不带液位 80.0 分）；256 步特权价值网络的预测解释方差升至 85.6%。"
+  },
+  {
+   "date": "2026-11-27 13:08",
+   "tone": "good",
+   "text": "Stage 7 migrated seamlessly onto a fresh 96 GB GPU with zero lost steps and posted seven consecutive 12×5 improvements by round 70 (2.8 h): 40.9 EMA / 41.0 raw (levels hit a record 33.8, post-event 42.9), 24×10 crossed 55 for the first time at 55.2 (levels 55.3), and a 64-plant audit confirmed long-delay plants (25+ steps) began climbing alongside +6.7-point gains on short-delay and level plants.",
+   "text_zh": "第七阶段零丢步无缝换至全新 96 GB GPU，至第 70 轮（2.8 小时）实现 12×5 验证七连涨：平均权重 40.9 分、实时权重首次触及 41.0 分（带液位创历史新高 33.8 分、事件后 42.9 分）；24×10 历史首破 55 达 55.2 分（带液位 55.3 分）；64 台对照剖析证实纯滞后 25 步以上的装置开始放量提分，短滞后与液位装置均较起点大涨 6.7 分。"
+  },
+  {
+   "date": "2026-11-27 12:05",
+   "tone": "good",
+   "text": "Stage 7 round 60 (2.3 h, 715 updates) extended the 12×5 streak to six straight gains at 40.8 (non-level 44.9, hidden-pairing 4.6), while 48×20 climbed back to 61.3 and beat self-tuning PID on 50.0% of test plants. Offline gradient audits on 64 unseen plants confirmed the dead-time privileged critic flipped medium-delay gradient alignment from negative to strongly positive (+0.61) and raised long-delay alignment to +0.75.",
+   "text_zh": "第七阶段第 60 轮（2.3 小时、715 次更新）延续 12×5 六连涨至 40.8 分（不带液位 44.9 分、不告知配对 4.6 分），48×20 回升至 61.3 分且对自整定PID 胜率创 50.0% 新高。对 64 台未见装置的离线梯度校验证实，纯滞后特权价值网络把中滞后装置的梯度余弦由负翻正至 +0.61，并将长滞后装置的梯度对齐度提升至 +0.75。"
+  },
+  {
+   "date": "2026-11-27 11:38",
+   "tone": "good",
+   "text": "Stage 7 rounds 40–50 (1.9 h, 595 updates) broke cleanly past the 110-round 40-point plateau with five straight gains: 12×5 reached 40.5 on both EMA and raw weights (non-level 44.5, levels 33.6 at round 40, hidden-pairing 4.5), and 24×10 level plants reached a new high of 55.3.",
+   "text_zh": "第七阶段第 40–50 轮（1.9 小时、595 次更新）连续五次上涨，彻底突破此前持续 110 轮的 40 分平台：12×5 平均权重与实时权重双双突破 40 达 40.5 分（不带液位 44.5 分、带液位第 40 轮达 33.6 分、不告知配对达 4.5 分），24×10 带液位创 55.3 分新高。"
+  },
+  {
+   "date": "2026-11-27 11:05",
+   "tone": "good",
+   "text": "Stage 7 round 30 (1.1 h, 356 updates) set all-time records across every plant size: 12×5 crossed 40 for the first time at 40.1 (non-level 44.4, hidden-pairing raw 4.1), 24×10 reached 55.0 (self-tuning PID 53.0), and 48×20 jumped to 62.3 (non-level 80.6, post-event 64.2; self-tuning PID 56.2).",
+   "text_zh": "第七阶段第 30 轮（1.1 小时、356 次更新）在全部尺寸刷新全历史新高：12×5 首次实破 40 达 40.1 分（不带液位 44.4 分、不告知配对实时权重首破 4 达 4.1 分），24×10 升至 55.0 分（自整定PID 53.0 分），48×20 飙升至 62.3 分（不带液位 80.6 分、事件后首破 64 达 64.2 分，领先自整定PID 56.2 分）。"
+  },
+  {
+   "date": "2026-11-27 10:35",
+   "tone": "good",
+   "text": "Stage 7 rounds 10–20 (0.8 h, 236 updates, peak 83.2 GB memory with zero stalls): 24×10 reached a record 54.7 (levels 55.0), 12×5 raw weights jumped +1.2 points to 39.9, hidden-pairing rose to 3.3, and the freshly initialized 256-step four-head dead-time critic reached 82.2% explained variance within 19 rounds.",
+   "text_zh": "第七阶段第 10–20 轮（0.8 小时、236 次更新，峰值显存 83.2 GB 且零卡顿）：24×10 刷新历史新高 54.7 分（带液位 55.0 分），12×5 实时权重净涨 1.2 分达 39.9 分，不告知配对升至 3.3 分；从零训练的 256 步四头纯滞后特权价值网络仅用 19 轮预测解释方差就达到 82.2%。"
+  },
+  {
+   "date": "2026-11-27 09:35",
+   "tone": "good",
+   "text": "Stage 6 closed rounds 140–150 (5.9 h, 1,797 updates) with records on 48×20 (62.0, non-level first past 80 at 80.3) and 24×10 (54.4), while confirming 12×5 stayed capped between 38.5 and 40.0 for 11 straight evaluations. Switched live on the 96 GB GPU to Stage 7, introducing the dead-time Smith-predictor privileged critic (256-step four-head), sharper dead-band cost alignment, and reversal-only anti-chatter smoothing.",
+   "text_zh": "第六阶段完成第 140–150 轮（5.9 小时、1,797 次更新），将 48×20 推至 62.0 分（不带液位首次突破 80 达 80.3 分）、24×10 推至 54.4 分，同时确认 12×5 连续 11 次验证停滞在 38.5–40.0 分。现已在现役 GPU 无缝切入第七阶段，上线纯滞后 Smith 预测器风格的特权价值网络（256 步四头预测）、更贴合带宽考核的目标函数以及反向防抖平滑。"
+  },
+  {
+   "date": "2026-11-27 08:34",
+   "tone": "good",
+   "text": "Stage 6 rounds 110–130 (5.1 h): 24×10 broke 54 for the first time at 54.6 (above self-tuning PID 53.0), 48×20 hit its lowest constraint violation rate yet (11.5%), and 12×5 levels reached 33.6. Controlled offline A/B tests proved that feeding exact delay-pipeline and Smith-predictor features into the privileged critic more than doubles gradient alignment (2.4×) on unseen long-delay plants.",
+   "text_zh": "第六阶段第 110–130 轮（5.1 小时）：24×10 历史首破 54 达 54.6 分（领先自整定PID 53.0 分），48×20 越限占比降至 11.5% 新低，12×5 带液位升至 33.6 分。离线受控对照实验证实，向特权价值网络输入延迟管道在途动作与 Smith 预测器终态特征，可将未见大纯滞后装置的梯度对齐度提高到原来的 2.4 倍。"
+  },
+  {
+   "date": "2026-11-27 07:34",
+   "tone": "good",
+   "text": "Stage 6 round 100 (3.9 h, 1,197 updates) pushed both large plant batches to new highs: 48×20 climbed to 61.7 (levels 52.4, post-event 63.6; self-tuning PID 56.2) and 24×10 reached 53.9 (levels 54.3; self-tuning PID 53.0), while the privileged critic reached 86.2% explained variance.",
+   "text_zh": "第六阶段第 100 轮（3.9 小时、1,197 次更新）大尺寸装置再创新高：48×20 冲至 61.7 分（带液位 52.4 分、事件后 63.6 分；自整定PID 56.2 分），24×10 达到 53.9 分（带液位 54.3 分；自整定PID 53.0 分），特权价值网络预测解释方差升至 86.2%。"
+  },
+  {
+   "date": "2026-11-27 07:05",
+   "tone": "good",
+   "text": "Stage 6 round 90 (3.5 h): 48×20 broke 61 for the first time at 61.1 (+4.9 points above self-tuning PID 56.2), hidden-pairing held at 2.4, and raw 12×5 weights (39.3) surpassed EMA weights (39.1) across every sub-metric as cosine learning-rate decay took effect.",
+   "text_zh": "第六阶段第 90 轮（3.5 小时）：48×20 历史首次突破 61 达 61.1 分（领先自整定PID 56.2 分达 4.9 分），不告知配对稳在 2.4 分；随着余弦学习率退火生效，12×5 实时权重（39.3 分）全子项反超平均权重（39.1 分）。"
+  },
+  {
+   "date": "2026-11-27 06:34",
+   "tone": "good",
+   "text": "Stage 6 round 80 (3.1 h) set records on integrating-level plants across every size: 12×5 levels broke 33 at 33.5 (+4.3 points from stage start), 48×20 levels reached 50.7 (overall 60.2), and 24×10 levels held 53.7.",
+   "text_zh": "第六阶段第 80 轮（3.1 小时）全尺寸带液位装置创历史新高：12×5 带液位首破 33 达 33.5 分（较本阶段起点涨 4.3 分），48×20 带液位达 50.7 分（合计 60.2 分），24×10 带液位稳在 53.7 分。"
+  },
+  {
+   "date": "2026-11-27 06:13",
+   "tone": "good",
+   "text": "Zero-shot 8-family mechanistic exam (8 episodes each, 64 total, never trained on mechanistic plants) on Stage 6 round 40 averaged 57.5 with zero trips: Distillation column A 95.2 (ahead of static-model MPC 81.2 and self-tuning PID 38.3), BSM1 wastewater 87.5 (ahead of PID 86.2), Building heating 63.0, TEP 56.0, Quadruple tank 51.6, Exothermic CSTR 39.0, pH 37.7, and Debutanizer 30.2.",
+   "text_zh": "第六阶段第 40 轮权重（训练全程未见过任何机理装置）完成八类工业机理装置 8 回合零样本考核，平均分达 57.5 且 64 回合零跳停：精馏塔 A 达 95.2 分（超过静态模型MPC 的 81.2 与自整定PID 的 38.3）、BSM1 污水处理 87.5 分（超过自整定PID 的 86.2）、建筑供暖 63.0、TEP 56.0、四水箱 51.6、放热反应釜 39.0、pH 中和 37.7、脱丁烷塔 30.2。"
+  },
+  {
+   "date": "2026-11-27 05:57",
+   "tone": "good",
+   "text": "Refreshed all four Section 03 dynamic replays using Stage 6 round 40 weights (trained without mechanistic plants): zero-shot TEP jumped from −110.6 to +63.0, zero-shot BSM1 wastewater reached +92.8, the typical 4-valve plant jumped from −34.2 to +77.2, and the series-level unit improved from −65.5 to −27.4.",
+   "text_zh": "用第六阶段第 40 轮权重（未训练机理装置）刷新第 03 节全部四组动态回放：零样本 TEP 从 −110.6 分跃升至 +63.0 分，零样本 BSM1 污水处理达 +92.8 分，典型四阀随机装置从 −34.2 分升至 +77.2 分，串级液位装置从 −65.5 分改善至 −27.4 分。"
+  },
+  {
+   "date": "2026-11-27 05:47",
+   "tone": "good",
+   "text": "Stage 6 rounds 50–60 (2.3 h): hidden-pairing control broke 3 points for the first time (3.2), 48×20 held above 60 twice in a row (60.2, non-level peak 79.1), and a 64-plant audit confirmed the upper quartile jumped +9.4 points (52.7 → 62.1) with global under-driving solved.",
+   "text_zh": "第六阶段第 50–60 轮（2.3 小时）：不告知配对工况历史首次突破 3 分达 3.2 分，48×20 连续两次站稳 60.2 分（不带液位峰值 79.1 分）；64 台对照剖析证实上四分位成绩大涨 9.4 分（52.7 → 62.1），此前普遍动作偏小的问题已解决。"
+  },
+  {
+   "date": "2026-11-27 05:04",
+   "tone": "good",
+   "text": "Stage 6 round 40 (1.5 h, 477 updates) reached 40.0 on 12×5 (+2.9 points in 1.5 h): levels 32.8, non-level 44.0, post-event 41.9, hidden-pairing crossed 2 for the first time (2.1), and 24×10 levels hit 54.6 (overall 53.2, surpassing self-tuning PID 53.0).",
+   "text_zh": "第六阶段第 40 轮（1.5 小时、477 次更新）在 12×5 触及 40.0 分（1.5 小时净涨 2.9 分）：带液位 32.8 分、不带液位 44.0 分、事件后 41.9 分、不告知配对首破 2 达 2.1 分；24×10 带液位升至 54.6 分，综合分达 53.2 超过自整定PID（53.0）。"
+  },
+  {
+   "date": "2026-11-27 04:37",
+   "tone": "good",
+   "text": "Stage 6 rounds 20–30 (1.1 h) broke records across every size: 12×5 climbed +1.8 points to 38.9 (levels 31.8, non-level 42.8, post-event first over 40 at 40.4), 48×20 broke 60 for the first time at 60.3 (self-tuning PID 56.2), and 24×10 held 53.1.",
+   "text_zh": "第六阶段第 20–30 轮（1.1 小时）全线刷新纪录：12×5 较本阶段起点大涨 1.8 分至 38.9 分（带液位 31.8 分、不带液位 42.8 分、事件后首破 40 达 40.4 分），48×20 首次突破 60 达 60.3 分（领先自整定PID 56.2 分），24×10 稳在 53.1 分。"
+  },
+  {
+   "date": "2026-11-27 03:49",
+   "tone": "good",
+   "text": "Stage 6 round 10 (just 20 min, 117 updates) set four all-time highs: 24×10 jumped +1.4 points to 53.4 (first time past self-tuning PID 53.0), hidden-pairing reached 1.6, 12×5 non-level reached 41.5, and 48×20 reached 59.7.",
+   "text_zh": "第六阶段第 10 轮（仅跑 20 分钟、117 次更新）连创四项新高：24×10 猛涨 1.4 分达 53.4 分（首次超越自整定PID 参照 53.0 分），不告知配对升至 1.6 分，12×5 不带液位达 41.5 分，48×20 升至 59.7 分。"
+  },
+  {
+   "date": "2026-11-27 03:20",
+   "tone": "good",
+   "text": "Offline analysis of Stage 5 on 64 plants showed excessive move smoothing was under-driving 85% of normal plants and a constant learning rate was capping 12×5 at 37.4. Switched live to Stage 6 with cosine learning-rate decay, 6× lighter smoothing, and a 5× larger batch size.",
+   "text_zh": "对第五阶段做 64 台离线排查发现：过重的动作平滑惩罚导致 85% 常规装置动作幅度偏小，且恒定学习率把 12×5 卡在 37.4 分。现已无缝切入第六阶段：启用 16 小时余弦学习率退火、把平滑惩罚降至原来的六分之一，并将并行批次扩至 5 倍。"
+  },
+  {
+   "date": "2026-11-27 03:07",
+   "tone": "good",
+   "text": "Stage 5 round 150 (5.8 h, 1,796 updates): hidden-pairing control crossed +1 for the first time (1.2), 12×5 non-level hit 41.4, and 48×20 held 59.6; five straight evaluations in the 37.1–37.4 range confirmed the constant learning rate had reached its noise floor.",
+   "text_zh": "第五阶段第 150 轮（5.8 小时、1,796 次更新）：不告知配对首次突破 +1 达 1.2 分，12×5 不带液位达 41.4 分，48×20 稳在 59.6 分；12×5 连续五次盘整在 37.1–37.4 分，确认恒定学习率已触及方差下限，准备切换余弦退火。"
+  },
+  {
+   "date": "2026-11-27 02:44",
+   "tone": "good",
+   "text": "Stage 5 rounds 130–140 (5.4 h) set three new highs: 48×20 reached 59.7 (levels 49.9), 24×10 reached 52.4 (levels 53.7), and hidden-pairing scored positive twice in a row (0.7).",
+   "text_zh": "第五阶段第 130–140 轮（5.4 小时）再刷三项新高：48×20 升至 59.7 分（带液位 49.9 分），24×10 升至 52.4 分（带液位 53.7 分），不告知配对连续两轮为正创 0.7 分新高。"
+  },
+  {
+   "date": "2026-11-27 02:05",
+   "tone": "good",
+   "text": "Stage 5 round 120 (4.6 h) pushed large plants to new highs: 48×20 reached 59.1 (+16.1 points from stage start; self-tuning PID 56.2) and 24×10 reached 52.0, while 12×5 held 37.1.",
+   "text_zh": "第五阶段第 120 轮（4.6 小时）大尺寸装置再破纪录：48×20 冲至 59.1 分（较起点暴涨 16.1 分，领先自整定PID 56.2 分），24×10 达 52.0 分，12×5 稳在 37.1 分。"
+  },
+  {
+   "date": "2026-11-27 01:35",
+   "tone": "good",
+   "text": "Stage 5 round 110 (4.2 h) jumped +1.2 points in 23 minutes to 37.4 overall (+6.4 points from stage start), crossing 30 on 12×5 level plants (30.3) and 41 on non-level plants (41.3) for the first time while cutting constraint violations.",
+   "text_zh": "第五阶段第 110 轮（4.2 小时）23 分钟内猛涨 1.2 分至 37.4 分（较本阶段起点涨 6.4 分），12×5 带液位首次破 30（30.3 分）、不带液位首次破 41（41.3 分），约束越限率继续下降。"
+  },
+  {
+   "date": "2026-11-27 01:09",
+   "tone": "good",
+   "text": "Stage 5 rounds 90–100 (3.8 h, 3.57M steps) set highs across every batch: 12×5 36.2 (levels 29.6, non-level 39.8), 24×10 51.2, and 48×20 58.1 (+15.1 points from stage start, ahead of self-tuning PID 56.2).",
+   "text_zh": "第五阶段第 90–100 轮（3.8 小时、357 万步）全线刷新纪录：12×5 达 36.2 分（带液位 29.6、不带液位 39.8），24×10 达 51.2 分，48×20 达 58.1 分（较本阶段起点大涨 15.1 分，已超自整定PID 56.2 分）。"
+  },
+  {
+   "date": "2026-11-27 00:35",
+   "tone": "good",
+   "text": "Stage 5 round 80 (3.0 h): hidden-pairing control turned positive (+0.5, up +7.4 points from −7.0) for the first time in the project, and 24×10 level plants reached a new high of 52.1.",
+   "text_zh": "第五阶段第 80 轮（3.0 小时）：不告知配对工况历史首次转正（+0.5 分，较起点 −7.0 净涨 7.4 分），24×10 带液位创 52.1 分新高。"
+  },
+  {
+   "date": "2026-11-27 00:05",
+   "tone": "good",
+   "text": "Stage 5 rounds 50–70 (2.7 h) crossed three milestones: 12×5 rose to 35.4, 24×10 crossed 50 for the first time (51.0), and 48×20 surged to 57.2 (overtaking self-tuning PID 56.2 for the first time).",
+   "text_zh": "第五阶段第 50–70 轮（2.7 小时）连跨三大台阶：12×5 升至 35.4 分，24×10 首次破 50 达 51.0 分，48×20 冲上 57.2 分（历史上首次超过同批自整定PID 的 56.2 分）。"
+  },
+  {
+   "date": "2026-11-26 22:53",
+   "tone": "good",
+   "text": "Stage 5 round 40 (90 min) swept every benchmark again: 12×5 34.1 (levels 27.7, non-level 37.6), 24×10 47.2, 48×20 52.5, and hidden-pairing −2.8 (+4.2 points in 90 minutes).",
+   "text_zh": "第五阶段第 40 轮（90 分钟）全线再破新高：12×5 达 34.1 分（带液位 27.7、不带液位 37.6），24×10 达 47.2 分，48×20 达 52.5 分，不告知配对升至 −2.8 分（90 分钟净涨 4.2 分）。"
+  },
+  {
+   "date": "2026-11-26 22:35",
+   "tone": "good",
+   "text": "Stage 5 round 30 (66 min) set four more highs: 24×10 46.6, 48×20 51.8, 12×5 levels 26.8 (overall 33.0), and hidden-pairing −3.2.",
+   "text_zh": "第五阶段第 30 轮（66 分钟）再刷四项新高：24×10 达 46.6 分、48×20 达 51.8 分、12×5 带液位达 26.8 分（综合 33.0 分）、不告知配对升至 −3.2 分。"
+  },
+  {
+   "date": "2026-11-26 22:05",
+   "tone": "good",
+   "text": "Stage 5 round 20 (45 min) reached all-time highs on every metric: 12×5 33.2 (levels 26.2, non-level 37.1), 24×10 44.8, 48×20 50.9, and hidden-pairing −3.4 (+3.6 points in 45 min), with the fixed-horizon privileged critic reaching 75–80% explained variance.",
+   "text_zh": "第五阶段第 20 轮（45 分钟）全部指标再创新高：12×5 达 33.2 分（带液位 26.2、不带液位 37.1），24×10 达 44.8 分，48×20 达 50.9 分，不告知配对升至 −3.4 分（45 分钟涨 3.6 分）；定长特权价值网络解释方差升至 75–80%。"
+  },
+  {
+   "date": "2026-11-26 21:39",
+   "tone": "good",
+   "text": "Stage 5 round 10 (19.5 min, 118 updates) broke every record: 12×5 32.4, 24×10 44.2, 48×20 crossed 50 for the first time (50.4), and hidden-pairing improved to −4.7; the fixed-horizon privileged critic stayed completely drift-free and enabled uniform learning across all 12 layers.",
+   "text_zh": "第五阶段第 10 轮（仅 19.5 分钟、118 次更新）全线破纪录：12×5 达 32.4 分、24×10 达 44.2 分、48×20 首次突破 50 达 50.4 分、不告知配对升至 −4.7 分；定长特权价值网络彻底消除自举漂移，全网 12 层首次实现均匀更新。"
+  },
+  {
+   "date": "2026-11-26 21:12",
+   "tone": "good",
+   "text": "Stage 4 raised GPU utilization to 90% (5.5× sample throughput, 2.7× update speed) and lifted hidden-pairing to −5.0 within 20 minutes, while exposing temporal-difference self-amplification in the critic; switched immediately to Stage 5 with a time-invariant, fixed-horizon privileged critic.",
+   "text_zh": "第四阶段将 GPU 利用率拉升至 90%（样本吞吐提升 5.5 倍、更新提速 2.7 倍），20 分钟就把不告知配对刷新到 −5.0 分，同时定位出价值网络的时序差分自举发散问题；已立即切换为采用定长未来真实代价拟合的第五阶段。"
+  },
+  {
+   "date": "2026-11-26 20:38",
+   "tone": "good",
+   "text": "Major training efficiency upgrade launched as Stage 4 on the 96 GB GPU (4× batch size): added layer-wise activation checkpointing, a training-only privileged value network reading true simulator states, hybrid Muon + AdamW optimization with higher learning rates for routing biases, and validation caching.",
+   "text_zh": "上线第四阶段重大提效升级（4 倍并行批次）：引入分层激活重算大幅省显存、新增读取仿真器内部真值的训练期特权价值网络、换用 Muon + AdamW 混合优化器并提高注意力路由偏置学习率，配合验证集缓存提速。"
+  },
+  {
+   "date": "2026-11-26 20:16",
+   "tone": "good",
+   "text": "Stage 3 confirmed width-aware output scaling eliminated the severe −19-point validation drops in raw weights (EMA 30.9 vs. raw 30.8, new hidden-pairing high −5.3), while profiling showed low batch size and uneven layer gradients were the remaining speed bottleneck.",
+   "text_zh": "第三阶段证实宽度自适应输出缩放彻底根治了实时权重骤降 19 分的震荡问题（平均权重 30.9 vs 实时权重 30.8、不告知配对创新高 −5.3 分），同时剖析定位出小批次噪声与浅层垄断梯度是拖慢收敛的剩余主因。"
+  },
+  {
+   "date": "2026-11-26 19:52",
+   "tone": "good",
+   "text": "Ablation checks on Stage 2 round 65 (31.0 peak, levels 25.6) proved the unscaled action readout head caused over 80% of raw-weight instability; transitioned seamlessly to Stage 3 with width-aware 1/√d output scaling and weight-decay-free delay biases.",
+   "text_zh": "对第二阶段第 65 轮（峰值 31.0 分、带液位 25.6 分）做消融排查证实，未做宽度缩放的动作输出头导致了八成以上的实时权重掉分；已无缝切入启用 1/√d 宽度缩放与滞后偏置免衰减的第三阶段。"
+  },
+  {
+   "date": "2026-11-26 18:14",
+   "tone": "good",
+   "text": "Stage 2 broke 30 points at round 55 (2.5 h on Colab 96 GB GPU), setting new all-time highs on every validation batch: 12×5 30.4 (levels 23.0, non-level 34.6), 24×10 43.6, 48×20 49.1, and hidden-pairing −5.6.",
+   "text_zh": "第二阶段在第 55 轮（2.5 小时）突破 30 分，全部验证批同步刷新历史新高：12×5 达 30.4 分（带液位 23.0、不带液位 34.6），24×10 达 43.6 分，48×20 达 49.1 分，不告知配对升至 −5.6 分。"
+  },
+  {
+   "date": "2026-11-26 17:45",
+   "tone": "good",
+   "text": "Stage 2 reached round 45 (2.4 h) with broad new highs—12×5 reaching 29.6 (levels 23.9) and 48×20 reaching 46.3—while spurious valve movement before the first event dropped tenfold.",
+   "text_zh": "第二阶段跑至第 45 轮（2.4 小时），多项刷新历史新高：12×5 峰值 29.6 分（带液位 23.9 分）、48×20 升至 46.3 分，同时静息无事件时的误动降为原来的十分之一。"
+  },
+  {
+   "date": "2026-11-26 15:27",
+   "tone": "good",
+   "text": "Fixed six training, memory, and synchronization bugs (duplicate tail cost accounting, unused probe noise, cross-size gradient mixing, 9.6 GB memory leak, and oversized checkpoint syncing) and started Stage 2 on a 96 GB GPU continuing from Stage 1 round 732.",
+   "text_zh": "修复六处训练、显存与同步缺陷（末端代价重复计数、冗余试阀噪声、跨尺寸梯度混淆、9.6 GB 显存泄漏与存档同步冗余），承接第一阶段第 732 轮权重在 96 GB GPU 正式开启第二阶段纯真实代价训练。"
+  },
+  {
+   "date": "2026-11-26 13:42",
+   "tone": "bad",
+   "text": "Research paused; training stopped by hand at round 732 with the best score +28.3 (round 715), state saved for a later resume.",
+   "text_zh": "研究暂停；训练手动停在第 732 轮，最好成绩 +28.3（第 715 轮），状态已存好，以后可接着练。"
+  },
+  {
+   "date": "2026-11-26 09:55",
+   "tone": "good",
+   "text": "+27.0 at round 655 and still rising; not told the valve map it is up from −9.6 to −6.4.",
+   "text_zh": "第 655 轮 +27.0，仍在涨；不告诉对应关系时从 −9.6 回升到 −6.4。"
+  },
+  {
+   "date": "2026-11-26 04:24",
+   "tone": "good",
+   "text": "+25.2 at round 545, a new best at every part: plants with a level +17.6, the others +29.4, large plants about +41 to +42.",
+   "text_zh": "第 545 轮 +25.2，各项都是新高：带液位 +17.6，其余 +29.4，大尺寸 +41 到 +42。"
+  },
+  {
+   "date": "2026-11-25 23:12",
+   "tone": "good",
+   "text": "Training resumed on a new G4 and reached +22.7 at round 440; plants with a level +14.8, large plants +33 to +36.",
+   "text_zh": "在新的 G4 上续跑，第 440 轮 +22.7；带液位 +14.8，大尺寸 +33 到 +36。"
+  },
+  {
+   "date": "2026-11-25 20:18",
+   "tone": "bad",
+   "text": "At the 23-hour machine change no card came for 2.5 hours and nothing trained; the change now takes the next machine before stopping the old one.",
+   "text_zh": "满 23 小时换机时 2.5 小时没抢到卡，训练空转；换机已改成先抢到新机器再关旧的。"
+  },
+  {
+   "date": "2026-11-25 15:30",
+   "tone": "bad",
+   "text": "Checked for shortcuts and found none, but not told the valve map the model scores −11.4, and on median episodes its moves are 25–60% of the teacher's.",
+   "text_zh": "查过没有捷径，但不告诉对应关系时是 −11.4 分；中位回合里动作力度只有老师的 25–60%。"
+  },
+  {
+   "date": "2026-11-25 11:45",
+   "tone": "good",
+   "text": "The from-scratch run turned positive, +6.3 at round 305 (level plants −0.4, others +10.0, large plants −10); it rose at every validation since round 190.",
+   "text_zh": "从零训练的分数转正，第 305 轮 +6.3（液位装置 −0.4，其余 +10.0，大尺寸 −10）；第 190 轮起每次验证都在涨。"
+  },
+  {
+   "date": "2026-11-24 20:21",
+   "tone": "good",
+   "text": "The 116M network started training from scratch on the true cost alone, with no imitation and no auxiliary losses.",
+   "text_zh": "1.16 亿参数网络从零开训，只按真实代价，不模仿、不加辅助损失。"
+  },
+  {
+   "date": "2026-11-23 15:30",
+   "tone": "good",
+   "text": "Training overhauled: four bugs that held back the 116M run fixed (gradient leaking past cuts, guard ratchet, smoothing under teacher lead, cache rebuilt every window); pairing and signs told by default, blind episodes may try their valves.",
+   "text_zh": "训练大修完成：修掉拖垮 1.16 亿网络的四个工程错误（截断漏梯度、护栏棘轮、老师代驾时仍罚平滑、每窗重建缓存）；默认告知配对和正反作用，不告知的回合可自己试阀。"
+  },
+  {
+   "date": "2026-11-23 11:40",
+   "tone": "bad",
+   "text": "116M true-cost stage paused at round 187: −3.6 at round 180, still below holding the valves; training to be overhauled.",
+   "text_zh": "1.16 亿参数网络真实代价段停在第 187 轮：第 180 轮合计 −3.6，仍不如不动；暂停，准备大修训练。"
+  },
+  {
+   "date": "2026-11-20 16:00",
+   "tone": "bad",
+   "text": "True-cost stage of the 116M network, round 122 (after an out-of-range fix): the cost has not fallen, −5.2 at round 110 and −11.2 at round 120, and more steps are skipped.",
+   "text_zh": "1.16 亿参数网络真实代价段（修好越界后）到第 122 轮：代价没降，第 110 轮合计 −5.2、第 120 轮 −11.2，丢步变多。"
+  },
+  {
+   "date": "2026-11-20 09:45",
+   "tone": "good",
+   "text": "The 116M network moves on to the true cost from round 100.",
+   "text_zh": "1.16 亿参数网络从第 100 轮起接真实代价训练。"
+  },
+  {
+   "date": "2026-11-20 09:42",
+   "tone": "bad",
+   "text": "The 116M imitation stage ended flat: −7.0 at round 100, no better since round 20; it reads its own valve within an episode (.38 vs 1.39 for a guess) but not which valve moves which reading.",
+   "text_zh": "1.16 亿参数网络模仿段 100 轮收平：第 100 轮合计 −7.0，20 轮后不再涨；回合内能读出自己那个阀的作用（.38，瞎猜 1.39），哪个阀管哪个读数没学到。"
+  },
+  {
+   "date": "2026-11-19 22:10",
+   "tone": "bad",
+   "text": "116M network from scratch, round 10: −9.2 overall (−5.6 when told which valve moves which reading), barely moving the valves; it is learning to read its own valve, not yet which valve moves which reading.",
+   "text_zh": "1.16 亿参数网络从零第 10 轮：合计 −9.2（告诉它阀管哪个读数时 −5.6），几乎不动阀；自己那个阀的作用在学，哪个阀管哪个读数还没学到。"
+  },
+  {
+   "date": "2026-11-19 21:22",
+   "tone": "good",
+   "text": "The 116M network starts from scratch with imitation plus reading labels (resumed at round 9).",
+   "text_zh": "1.16 亿参数网络从零开训：模仿 + 读数标签（21:22 从第 9 轮续训）。"
+  },
+  {
+   "date": "2026-11-18 19:30",
+   "tone": "bad",
+   "text": "Reading labels added to full training for 60 rounds did not help: the score stayed at 4.3 and, untold, the direction is still a guess. Next: pretrain the reading alone.",
+   "text_zh": "加读数标签练了 60 轮没见效：分数停在 4.3，不告诉时阀往哪边作用仍是瞎猜；下一步先专门练读数。"
+  },
+  {
+   "date": "2026-11-18 06:40",
+   "tone": "good",
+   "text": "The cause is found: the network controls when told which valve moves which reading (40) and fails to read which way a valve acts; taught with a label alone it reads 93% right.",
+   "text_zh": "找到卡点：告诉它哪个阀管哪个读数时会控制（40 分），自己读不出阀往哪边作用；单拿标签练能读对 93%。"
+  },
+  {
+   "date": "2026-11-17 20:45",
+   "tone": "bad",
+   "text": "Half precision saves no memory on the true-cost step, so it is off.",
+   "text_zh": "半精度在真实代价这一步不省显存，已关。"
+  },
+  {
+   "date": "2026-11-16 16:55",
+   "tone": "good",
+   "text": "The environment standard is now H4: seven frozen exam batches, adding 24×10, 48×20 and two mechanistic batches with their references; the mechanistic batches are not yet bit-identical across machines, so they are read on Colab G4 only.",
+   "text_zh": "环境标准升到 H4：考试批扩到七批，加进 24×10、48×20 和两批机理装置，参照随包；机理批还不能跨机器逐位一致，暂时只在 Colab G4 上读。"
+  },
+  {
+   "date": "2026-11-16 13:18",
+   "tone": "good",
+   "text": "New direction started: an end-to-end attention network, imitating the oracle MPC first; a 30-round short run is on Colab.",
+   "text_zh": "新方向开跑：端到端注意力网络，先模仿 oracle MPC；Colab 上 30 轮短跑。"
+  },
+  {
+   "date": "2026-11-15 16:58",
+   "tone": "bad",
+   "text": "Training from scratch is stopped: the network structure and training method are being redesigned first.",
+   "text_zh": "从零正式训练叫停：先重新设计网络结构和训练方法。"
+  }
+ ],
+ "runs": [],
+ "sim_rl": {
+  "state": "training",
+  "pill": "Stage 10 round 280 · 12×5 47.8 EMA / 48.0 raw · 0.8 from PID",
+  "pill_zh": "第十阶段第 280 轮 · 12×5 47.8 平均 / 48.0 实时 · 距 PID 0.8 分",
+  "title": "Stage 10 rounds 270–280 smash 12×5 records: 47.8 EMA / 48.0 raw, levels 41.6–41.9, cost lows on 12×5 & 24×10",
+  "title_zh": "第十阶段第 270–280 轮连破 12×5 纪录：平均 47.8 / 实时首破 48（48.0）、带液位 41.6–41.9、双尺寸代价新低",
+  "text": "9.10 h in on the fresh 96 GB Blackwell GPU (57% of 16 h schedule, round 281 live, 95% GPU util, 72–92 s/row, zero retries, zero bad samples): round 270 hit 47.5 EMA / 47.8 raw with levels surging to 41.6 EMA / 41.9 raw (0.1 from PID 42.0) and violations at a record-low 35.1%; round 280 climbed again to 47.8 EMA / 48.0 raw (first time ever past 48, 0.8 from PID 48.6), non-level 51.5 EMA / 51.7 raw, 12×5 cost low 236.3k, 24×10 59.3 with first cost under 150k (149.5k, levels 60.7, violations 12.7%), and 48×20 64.9 (non-level 81.3, 50.0% win).",
+  "text_zh": "在新 96 GB Blackwell GPU 上已跑 9.10 小时（16 小时计划进度 57%，已推进至第 281 轮、GPU 利用率 95%、单轮 72–92 秒、零重试零坏样本）：第 270 轮 12×5 达平均 47.5 / 实时 47.8，带液位飙至平均 41.6 / 实时 41.9（距 PID 42.0 仅差 0.1 分），越限率创 35.1% 新低；第 280 轮再创平均 47.8 / 实时 48.0（历史首次破 48，距自整定PID 48.6 仅差 0.8 分）、不带液位平均 51.5 / 实时 51.7、12×5 总代价 23.63 万新低，24×10 稳在 59.3 且总代价首次跌破 15 万（14.95 万、带液位 60.7、越限率 12.7%），48×20 达 64.9（不带液位 81.3、胜率 50.0%）。",
+  "expected_replay": "2026-11-29T00:50:00+08:00"
+ },
+ "tables": [
+  {
+   "chart": true,
+   "title": "Latest validation best (Stage 10, round 280) beside reference controllers",
+   "title_zh": "最新验证最佳成绩（第十阶段第 280 轮）与工程参照对比",
+   "note": "Evaluated on the same 256 unseen 12×5 plants when loop pairings are published (Stage 10 round 280 best 47.8 EMA / 48.0 raw — first time past 48 and just 0.8 behind self-tuning PID 48.6; with levels 41.0 [round 270 hit 41.6 EMA / 41.9 raw], without levels 51.5 [raw 51.7], violations low 35.1% at round 270, episode cost low 236.3k, hidden-pairing up to 20.0 at round 220). On larger unseen batches, Stage 10 reached 59.3 on 24×10 (cost low 149.5k at round 280, levels 61.4) and 65.8 on 48×20 (round 240, +9.6 above PID; violations low 10.4%; self-tuning PID scores 53.0 and 56.2).",
+   "note_zh": "各控制器均在同一批 256 台未见 12×5 装置、告知常规配对条件下考核（第十阶段第 280 轮最佳合计平均 47.8 / 实时首破 48 达 48.0，距自整定PID 48.6 仅差 0.8 分；带液位 41.0 [第 270 轮创平均 41.6 / 实时 41.9 新高]、不带液位 51.5 [实时 51.7]、第 270 轮越限率低至 35.1%、总代价 23.63 万新低、第 220 轮盲控首破 20 达 20.0）。大尺寸未见批上，第十阶段 24×10 达 59.3（第 280 轮总代价创 14.95 万新低、带液位 61.4），48×20 达 65.8（第 240 轮，领先 PID 9.6 分；越限率低至 10.4%；自整定PID 为 53.0 与 56.2）。",
+   "cols": [
+    [
+     "All",
+     "合计"
+    ],
+    [
+     "With a level",
+     "带液位"
+    ],
+    [
+     "Without",
+     "不带液位"
+    ]
+   ],
+   "rows": [
+    {
+     "key": "net",
+     "name": "Model (Stage 10, round 280)",
+     "name_zh": "模型（第十阶段第 280 轮）",
+     "v": [
+      "47.8",
+      "41.0",
+      "51.5"
+     ]
+    },
+    {
+     "key": "dmc",
+     "name": "Static-model MPC",
+     "name_zh": "静态模型MPC",
+     "v": [
+      "91.2",
+      "89.5",
+      "92.2"
+     ]
+    },
+    {
+     "key": "pi",
+     "name": "Self-tuning PID",
+     "name_zh": "自整定PID",
+     "v": [
+      "48.6",
+      "42.0",
+      "52.2"
+     ]
+    }
+   ]
+  },
+  {
+   "chart": true,
+   "dots": true,
+   "title": "Zero-shot scores on mechanistic industrial plant families (never trained on mechanistic plants)",
+   "title_zh": "经典机理装置零样本分族成绩（训练全程未见过机理装置）",
+   "note": "8 episodes per plant family (64 episodes total, zero trips); every controller runs the exact same plant, events, and noise. Eight-family average: Model (Stage 10 round 80) 70.5 [first time past 70, +6.2 over Stage 9 and +8.3 above self-tuning PID!], Self-tuning PID 62.2, Static-model MPC 90.9.",
+   "note_zh": "每类装置考 8 个回合（共 64 回合、零跳停），所有控制器面对完全相同的装置、事件与噪声。八族平均分：模型（第十阶段第 80 轮）70.5 [历史首破 70，较第九阶段暴涨 6.2 分、领先自整定PID 8.3 分]、自整定PID 62.2、静态模型MPC 90.9。",
+   "cols": [
+    [
+     "BSM1 wastewater",
+     "BSM1 污水处理"
+    ],
+    [
+     "Distillation column A",
+     "精馏塔 A"
+    ],
+    [
+     "Building heating",
+     "建筑供暖"
+    ],
+    [
+     "Quadruple tank",
+     "四水箱"
+    ],
+    [
+     "TEP",
+     "TEP 田纳西–伊斯曼"
+    ],
+    [
+     "Exothermic CSTR",
+     "放热 CSTR"
+    ],
+    [
+     "pH neutralisation",
+     "pH 中和"
+    ],
+    [
+     "Debutanizer",
+     "脱丁烷塔"
+    ]
+   ],
+   "rows": [
+    {
+     "key": "net",
+     "name": "Model (Stage 10 round 80, zero-shot)",
+     "name_zh": "模型（第十阶段第 80 轮，零样本）",
+     "v": [
+      "93.0",
+      "94.7",
+      "74.5",
+      "73.5",
+      "70.7",
+      "50.7",
+      "62.5",
+      "44.5"
+     ]
+    },
+    {
+     "key": "dmc",
+     "name": "Static-model MPC",
+     "name_zh": "静态模型MPC",
+     "v": [
+      "99.7",
+      "81.2",
+      "96.1",
+      "98.4",
+      "93.2",
+      "83.3",
+      "87.1",
+      "88.0"
+     ]
+    },
+    {
+     "key": "pi",
+     "name": "Self-tuning PID",
+     "name_zh": "自整定PID",
+     "v": [
+      "86.2",
+      "38.3",
+      "66.5",
+      "66.5",
+      "72.4",
+      "60.3",
+      "40.3",
+      "66.9"
+     ]
+    }
+   ]
+  }
+ ],
+ "replays": [
+  {
+   "file": "sim-level-replay.json",
+   "label": "Plant with a level",
+   "label_zh": "带液位的装置"
+  },
+  {
+   "file": "sim-median-replay.json",
+   "label": "Typical plant",
+   "label_zh": "一般装置"
+  },
+  {
+   "file": "sim-tep-replay.json",
+   "label": "TEP",
+   "label_zh": "TEP"
+  },
+  {
+   "file": "sim-bsm1-replay.json",
+   "label": "BSM1 wastewater",
+   "label_zh": "BSM1 污水处理"
+  }
+ ],
+ "train_labels": [
+  {
+   "prefix": "sq",
+   "en": "End-to-end control network",
+   "zh": "端到端控制网络",
+   "show": true
+  },
+  {
+   "prefix": "sq-huge",
+   "en": "End-to-end control network (116M parameters)",
+   "zh": "端到端控制网络（1.16 亿参数）",
+   "show": true
+  },
+  {
+   "prefix": "sq-sign",
+   "en": "End-to-end control network with reading labels",
+   "zh": "端到端控制网络（加读数监督）",
+   "show": true
+  },
+  {
+   "prefix": "sq-big",
+   "en": "End-to-end control network (from scratch)",
+   "zh": "端到端控制网络（从零训练）",
+   "show": true
+  },
+  {
+   "prefix": "sq-pure",
+   "en": "Stage 1 · Pure real-cost end-to-end training",
+   "zh": "第一阶段 · 纯真实代价端到端训练",
+   "show": true
+  },
+  {
+   "prefix": "sq-pure-2",
+   "en": "Stage 2 · Pure real-cost training (fixed training pipeline)",
+   "zh": "第二阶段 · 纯真实代价训练（修复训练管线）",
+   "show": true
+  },
+  {
+   "prefix": "sq-pure-3",
+   "en": "Stage 3 · Pure real-cost training (width-scaled action head)",
+   "zh": "第三阶段 · 纯真实代价训练（宽度自适应输出缩放）",
+   "show": true
+  },
+  {
+   "prefix": "sq-pure-4",
+   "en": "Stage 4 · Pure real-cost training (4× batch + privileged critic + Muon)",
+   "zh": "第四阶段 · 纯真实代价训练（4 倍批次 + 特权价值网络 + Muon）",
+   "show": true
+  },
+  {
+   "prefix": "sq-pure-5",
+   "en": "Stage 5 · Pure real-cost training (fixed-horizon privileged critic + Muon)",
+   "zh": "第五阶段 · 纯真实代价训练（定长特权价值网络 + Muon）",
+   "show": true
+  },
+  {
+   "prefix": "sq-pure-6",
+   "en": "Stage 6 · Pure real-cost training (cosine decay + reduced smoothing + 5× batch)",
+   "zh": "第六阶段 · 纯真实代价训练（余弦退火 + 降低动作平滑 + 5 倍批次）",
+   "show": true
+  },
+  {
+   "prefix": "sq-pure-7",
+   "en": "Stage 7 · Pure real-cost training (256-step dead-time privileged critic + reversal smoothing)",
+   "zh": "第七阶段 · 纯真实代价训练（256 步纯滞后特权价值网络 + 反向防抖平滑）",
+   "show": true
+  },
+  {
+   "prefix": "sq-pure-8",
+   "en": "Stage 8 · Upgraded architecture (dense dead-time lags, Layer-0 memory feedback & pairwise edge memory)",
+   "zh": "第八阶段 · 架构升级（致密滞后注意力 + 输入层记忆回馈 + 成对关联记忆）",
+   "show": true
+  },
+  {
+   "prefix": "sq-pure-9",
+   "en": "Stage 9 · Multi-scale DeltaNet pairwise memory + 1-hop decoupling",
+   "zh": "第九阶段 · 多尺度 DeltaNet 成对记忆与 1 跳多变量解耦",
+   "show": true
+  },
+  {
+   "prefix": "sq-pure-10",
+   "en": "Stage 10 · Gain-aware Neural Smith Predictor + precision gate",
+   "zh": "第十阶段 · 增益感知神经网络版 Smith 预测器与微幅精调门控",
+   "show": true
+  }
+ ],
+ "exam_note": {
+  "en": "Stage 10 round 80 surged to an all-time high of 47.0 on 12×5 (just 1.6 behind self-tuning PID 48.6) with integrating levels breaking 40 for the first time (40.0), non-level hitting 50.8, post-event 49.9, pre-event 40.2, and win rate vs. PID 46.5%; zero-shot 8-family mechanistic average (measured at round 30) already reached 69.8 (+7.6 above PID, zero trips across 64 episodes, Distillation column A 94.0 vs. static-model MPC 81.2) and is queued for a full refresh alongside dynamic replays and open weights on round-80+ weights.",
+  "zh": "第十阶段第 80 轮将 12×5 推至 47.0 全历史新高（距自整定PID 48.6 仅差 1.6 分），带液位历史首破 40（40.0）、不带液位 50.8、事件后 49.9、事件前 40.2、对 PID 胜率 46.5%；八族零样本机理平均分（测自第 30 轮）已达 69.8（领先 PID 7.6 分、64 回合零跳停、精馏塔 A 94.0 超静态模型MPC 81.2），即将基于第 80 轮以上权重全面刷新机理考试、动态回放与全平台开源权重。"
+ },
+ "curve": {
+  "title": "Validation score across cumulative training rounds (pure true-cost training, Stages 1–10)",
+  "title_zh": "验证分随累计训练轮数的变化（纯真实代价端到端训练全程）",
+  "note": "All rounds are evaluated on the exact same 256-plant unseen 12×5 validation batch; rounds 1,314–1,534 are Stage 9 and rounds 1,544–1,814 are Stage 10 rounds 10–280 (climbing to 47.8 EMA / 48.0 raw overall, levels 41.6 EMA / 41.9 raw, non-level 51.5 EMA / 51.7 raw, hidden-pairing up to 20.0, 24×10 up to 59.3, and 48×20 up to 65.8). 24×10 and 48×20 use their own fixed unseen batches.",
+  "note_zh": "全部轮次均在同一批 256 台未见 12×5 装置上验证；第 1,314–1,534 轮为第九阶段，第 1,544–1,814 轮为第十阶段第 10–280 轮（已升至综合平均 47.8 / 实时 48.0、带液位 41.6 平均 / 41.9 实时、不带液位 51.5 平均 / 51.7 实时、盲控最高 20.0、24×10 最高 59.3、48×20 最高 65.8）。24×10 与 48×20 使用各自的固定未见验证批。",
+  "series": [
+   {
+    "key": "all",
+    "name": "Whole batch, told the valve map",
+    "name_zh": "整批（告诉对应关系）"
+   },
+   {
+    "key": "other",
+    "name": "Without a level",
+    "name_zh": "不带液位"
+   },
+   {
+    "key": "level",
+    "name": "With a level",
+    "name_zh": "带液位"
+   },
+   {
+    "key": "s24",
+    "name": "24×10 plants",
+    "name_zh": "24×10 装置"
+   },
+   {
+    "key": "s48",
+    "name": "48×20 plants",
+    "name_zh": "48×20 装置"
+   },
+   {
+    "key": "blind",
+    "name": "Whole batch, not told",
+    "name_zh": "整批（不告诉对应关系）"
+   }
+  ],
+  "points": [
+   [
+    5,
+    -9.7,
+    -7.4,
+    -14.1,
+    -32.6,
+    -28.7,
+    -9.4
+   ],
+   [
+    10,
+    -19.5,
+    -16.5,
+    -24.8,
+    -64.8,
+    -66.5,
+    -23.3
+   ],
+   [
+    15,
+    -11.6,
+    -7.5,
+    -18.9,
+    -48.2,
+    -52.3,
+    -15.7
+   ],
+   [
+    20,
+    -6.2,
+    -3.2,
+    -11.5,
+    -36.6,
+    -39.7,
+    -14.3
+   ],
+   [
+    25,
+    -5.6,
+    -1.5,
+    -13.0,
+    -42.4,
+    -43.3,
+    -13.8
+   ],
+   [
+    30,
+    -6.3,
+    -3.1,
+    -11.9,
+    -42.0,
+    -41.8,
+    -12.9
+   ],
+   [
+    35,
+    -3.7,
+    -0.3,
+    -9.8,
+    -35.6,
+    -39.1,
+    -11.6
+   ],
+   [
+    40,
+    -5.0,
+    -2.1,
+    -10.3,
+    -38.9,
+    -36.5,
+    -13.1
+   ],
+   [
+    45,
+    -11.3,
+    -8.5,
+    -16.4,
+    -49.9,
+    -53.2,
+    -16.3
+   ],
+   [
+    50,
+    -16.0,
+    -13.0,
+    -21.5,
+    -55.6,
+    -60.0,
+    -18.2
+   ],
+   [
+    55,
+    -16.7,
+    -13.6,
+    -22.3,
+    -56.1,
+    -60.3,
+    -18.8
+   ],
+   [
+    60,
+    -13.7,
+    -10.6,
+    -19.3,
+    -52.9,
+    -58.6,
+    -17.4
+   ],
+   [
+    65,
+    -13.0,
+    -10.0,
+    -18.4,
+    -52.5,
+    -57.9,
+    -16.2
+   ],
+   [
+    70,
+    -13.4,
+    -9.4,
+    -20.7,
+    -53.8,
+    -60.5,
+    -18.2
+   ],
+   [
+    75,
+    -15.5,
+    -12.3,
+    -21.5,
+    -56.6,
+    -59.9,
+    -18.4
+   ],
+   [
+    80,
+    -14.9,
+    -12.1,
+    -20.0,
+    -53.0,
+    -55.7,
+    -17.4
+   ],
+   [
+    85,
+    -17.9,
+    -14.2,
+    -24.5,
+    -57.3,
+    -61.0,
+    -20.1
+   ],
+   [
+    90,
+    -20.5,
+    -17.0,
+    -27.0,
+    -61.7,
+    -66.3,
+    -21.8
+   ],
+   [
+    95,
+    -18.8,
+    -15.4,
+    -25.1,
+    -59.8,
+    -62.6,
+    -20.1
+   ],
+   [
+    100,
+    -19.4,
+    -15.9,
+    -25.6,
+    -60.5,
+    -64.6,
+    -20.5
+   ],
+   [
+    105,
+    -15.0,
+    -11.3,
+    -21.8,
+    -54.9,
+    -59.2,
+    -19.1
+   ],
+   [
+    110,
+    -12.6,
+    -8.6,
+    -19.7,
+    -45.1,
+    -46.2,
+    -16.0
+   ],
+   [
+    115,
+    -15.2,
+    -11.8,
+    -21.4,
+    -53.2,
+    -58.1,
+    -16.2
+   ],
+   [
+    120,
+    -15.0,
+    -11.1,
+    -22.2,
+    -55.0,
+    -59.3,
+    -17.7
+   ],
+   [
+    125,
+    -12.0,
+    -8.1,
+    -19.1,
+    -49.2,
+    -52.0,
+    -17.0
+   ],
+   [
+    130,
+    -14.2,
+    -10.4,
+    -21.0,
+    -55.8,
+    -60.2,
+    -18.4
+   ],
+   [
+    135,
+    -14.4,
+    -10.2,
+    -22.0,
+    -53.4,
+    -58.1,
+    -19.1
+   ],
+   [
+    140,
+    -15.7,
+    -11.7,
+    -23.1,
+    -55.2,
+    -61.3,
+    -19.2
+   ],
+   [
+    145,
+    -18.2,
+    -14.3,
+    -25.2,
+    -58.7,
+    -64.4,
+    -20.6
+   ],
+   [
+    150,
+    -18.0,
+    -14.3,
+    -24.8,
+    -57.9,
+    -63.3,
+    -20.6
+   ],
+   [
+    155,
+    -17.4,
+    -13.3,
+    -24.8,
+    -57.5,
+    -64.3,
+    -20.6
+   ],
+   [
+    160,
+    -16.9,
+    -12.8,
+    -24.4,
+    -57.8,
+    -64.9,
+    -20.7
+   ],
+   [
+    165,
+    -17.0,
+    -12.4,
+    -25.5,
+    -57.4,
+    -63.4,
+    -20.4
+   ],
+   [
+    170,
+    -15.6,
+    -11.0,
+    -23.9,
+    -56.3,
+    -60.1,
+    -19.6
+   ],
+   [
+    175,
+    -14.8,
+    -10.5,
+    -22.8,
+    -53.7,
+    -59.8,
+    -18.8
+   ],
+   [
+    180,
+    -14.1,
+    -9.8,
+    -21.9,
+    -54.0,
+    -58.9,
+    -18.8
+   ],
+   [
+    185,
+    -14.2,
+    -10.1,
+    -21.8,
+    -53.2,
+    -56.9,
+    -19.4
+   ],
+   [
+    190,
+    -12.3,
+    -8.3,
+    -19.6,
+    -48.8,
+    -54.1,
+    -18.3
+   ],
+   [
+    195,
+    -9.5,
+    -5.8,
+    -16.2,
+    -35.1,
+    -38.0,
+    -15.9
+   ],
+   [
+    200,
+    -8.8,
+    -4.9,
+    -16.0,
+    -36.3,
+    -38.8,
+    -15.4
+   ],
+   [
+    205,
+    -8.0,
+    -4.3,
+    -14.7,
+    -39.0,
+    -39.8,
+    -15.1
+   ],
+   [
+    210,
+    -7.8,
+    -4.1,
+    -14.4,
+    -36.6,
+    -38.3,
+    -14.5
+   ],
+   [
+    215,
+    -6.8,
+    -2.8,
+    -14.0,
+    -33.7,
+    -35.0,
+    -13.9
+   ],
+   [
+    220,
+    -7.0,
+    -3.0,
+    -14.3,
+    -34.8,
+    -36.1,
+    -14.2
+   ],
+   [
+    225,
+    -6.4,
+    -2.5,
+    -13.5,
+    -32.8,
+    -32.5,
+    -14.3
+   ],
+   [
+    230,
+    -4.2,
+    -0.6,
+    -10.8,
+    -27.9,
+    -24.3,
+    -12.7
+   ],
+   [
+    235,
+    -1.8,
+    1.1,
+    -7.1,
+    -20.0,
+    -18.3,
+    -11.7
+   ],
+   [
+    240,
+    -2.3,
+    1.2,
+    -8.7,
+    -21.8,
+    -19.1,
+    -11.0
+   ],
+   [
+    245,
+    -3.4,
+    -0.1,
+    -9.3,
+    -28.5,
+    -25.7,
+    -12.3
+   ],
+   [
+    250,
+    -3.3,
+    -0.1,
+    -9.1,
+    -30.8,
+    -28.1,
+    -12.9
+   ],
+   [
+    255,
+    -3.1,
+    0.2,
+    -9.1,
+    -31.0,
+    -28.3,
+    -13.9
+   ],
+   [
+    260,
+    -3.2,
+    0.1,
+    -9.2,
+    -33.7,
+    -31.9,
+    -14.9
+   ],
+   [
+    265,
+    -3.4,
+    0.3,
+    -10.2,
+    -35.2,
+    -35.3,
+    -15.9
+   ],
+   [
+    270,
+    -1.9,
+    1.4,
+    -7.7,
+    -32.8,
+    -30.9,
+    -15.8
+   ],
+   [
+    275,
+    -0.3,
+    3.0,
+    -6.3,
+    -29.3,
+    -25.3,
+    -15.2
+   ],
+   [
+    280,
+    1.0,
+    4.4,
+    -5.2,
+    -25.5,
+    -21.8,
+    -15.1
+   ],
+   [
+    285,
+    2.7,
+    6.2,
+    -3.7,
+    -20.7,
+    -18.7,
+    -14.0
+   ],
+   [
+    290,
+    3.7,
+    7.0,
+    -2.5,
+    -19.0,
+    -16.3,
+    -14.2
+   ],
+   [
+    295,
+    4.4,
+    7.9,
+    -2.0,
+    -16.2,
+    -15.0,
+    -14.1
+   ],
+   [
+    300,
+    5.2,
+    9.0,
+    -1.7,
+    -12.9,
+    -12.4,
+    -14.0
+   ],
+   [
+    305,
+    6.3,
+    10.0,
+    -0.4,
+    -10.5,
+    -10.2,
+    -13.4
+   ],
+   [
+    310,
+    8.5,
+    11.9,
+    2.2,
+    -4.0,
+    -4.8,
+    -12.6
+   ],
+   [
+    315,
+    10.4,
+    14.1,
+    3.8,
+    0.5,
+    0.6,
+    -11.4
+   ],
+   [
+    320,
+    12.0,
+    15.8,
+    5.2,
+    4.2,
+    4.1,
+    -11.1
+   ],
+   [
+    325,
+    12.9,
+    17.0,
+    5.6,
+    6.6,
+    6.8,
+    -11.2
+   ],
+   [
+    330,
+    13.2,
+    17.3,
+    5.9,
+    4.7,
+    4.5,
+    -11.4
+   ],
+   [
+    335,
+    15.3,
+    19.5,
+    7.8,
+    9.6,
+    9.5,
+    -11.2
+   ],
+   [
+    340,
+    17.0,
+    21.2,
+    9.3,
+    16.7,
+    15.0,
+    -10.5
+   ],
+   [
+    345,
+    17.9,
+    21.9,
+    10.5,
+    20.7,
+    18.8,
+    -10.3
+   ],
+   [
+    350,
+    18.2,
+    22.5,
+    10.5,
+    24.1,
+    22.4,
+    -10.0
+   ],
+   [
+    355,
+    18.4,
+    23.1,
+    9.9,
+    27.9,
+    26.0,
+    -10.4
+   ],
+   [
+    360,
+    18.8,
+    23.6,
+    9.9,
+    28.9,
+    27.6,
+    -10.6
+   ],
+   [
+    365,
+    19.0,
+    24.1,
+    9.7,
+    30.5,
+    28.4,
+    -10.3
+   ],
+   [
+    370,
+    19.1,
+    24.3,
+    9.7,
+    32.8,
+    31.8,
+    -10.5
+   ],
+   [
+    375,
+    19.5,
+    24.8,
+    9.8,
+    34.2,
+    35.0,
+    -10.8
+   ],
+   [
+    380,
+    19.9,
+    25.3,
+    10.2,
+    34.7,
+    34.6,
+    -10.6
+   ],
+   [
+    385,
+    20.5,
+    25.7,
+    10.9,
+    35.5,
+    35.0,
+    -10.7
+   ],
+   [
+    390,
+    20.7,
+    25.7,
+    11.7,
+    35.2,
+    33.0,
+    -10.3
+   ],
+   [
+    395,
+    20.6,
+    25.8,
+    11.3,
+    35.0,
+    31.6,
+    -10.5
+   ],
+   [
+    400,
+    21.0,
+    25.9,
+    12.1,
+    35.2,
+    31.6,
+    -10.4
+   ],
+   [
+    405,
+    21.1,
+    25.8,
+    12.6,
+    35.4,
+    31.9,
+    -10.3
+   ],
+   [
+    410,
+    20.7,
+    25.7,
+    11.7,
+    35.3,
+    32.3,
+    -10.2
+   ],
+   [
+    415,
+    21.0,
+    26.1,
+    11.7,
+    35.6,
+    32.8,
+    -10.0
+   ],
+   [
+    420,
+    21.4,
+    26.3,
+    12.4,
+    35.9,
+    33.4,
+    -9.8
+   ],
+   [
+    425,
+    21.8,
+    26.4,
+    13.3,
+    36.0,
+    33.4,
+    -10.4
+   ],
+   [
+    430,
+    22.0,
+    26.4,
+    13.9,
+    35.8,
+    31.7,
+    -10.1
+   ],
+   [
+    435,
+    21.9,
+    26.3,
+    14.0,
+    35.5,
+    29.8,
+    -9.9
+   ],
+   [
+    440,
+    22.7,
+    27.1,
+    14.8,
+    36.2,
+    33.3,
+    -9.5
+   ],
+   [
+    445,
+    23.0,
+    27.2,
+    15.2,
+    37.2,
+    34.7,
+    -9.4
+   ],
+   [
+    450,
+    23.3,
+    27.5,
+    15.5,
+    37.2,
+    33.8,
+    -9.6
+   ],
+   [
+    455,
+    23.5,
+    27.8,
+    15.7,
+    37.6,
+    34.5,
+    -9.7
+   ],
+   [
+    460,
+    23.5,
+    27.9,
+    15.5,
+    37.7,
+    35.5,
+    -9.9
+   ],
+   [
+    465,
+    23.5,
+    28.0,
+    15.3,
+    37.7,
+    36.1,
+    -10.2
+   ],
+   [
+    470,
+    23.6,
+    28.2,
+    15.1,
+    38.1,
+    36.5,
+    -10.2
+   ],
+   [
+    475,
+    23.5,
+    28.1,
+    15.1,
+    38.5,
+    37.2,
+    -10.0
+   ],
+   [
+    480,
+    23.3,
+    28.0,
+    14.9,
+    38.7,
+    37.4,
+    -10.0
+   ],
+   [
+    485,
+    23.5,
+    28.2,
+    15.1,
+    38.9,
+    38.0,
+    -9.9
+   ],
+   [
+    490,
+    23.6,
+    28.2,
+    15.1,
+    39.0,
+    38.4,
+    -10.1
+   ],
+   [
+    495,
+    23.8,
+    28.3,
+    15.6,
+    39.2,
+    38.7,
+    -10.1
+   ],
+   [
+    500,
+    23.9,
+    28.3,
+    15.9,
+    39.9,
+    40.5,
+    -10.5
+   ],
+   [
+    505,
+    23.8,
+    28.2,
+    16.0,
+    39.6,
+    40.7,
+    -10.4
+   ],
+   [
+    510,
+    23.9,
+    28.1,
+    16.3,
+    39.7,
+    41.3,
+    -10.3
+   ],
+   [
+    515,
+    24.1,
+    28.4,
+    16.3,
+    39.7,
+    41.1,
+    -10.2
+   ],
+   [
+    520,
+    24.3,
+    28.6,
+    16.4,
+    39.7,
+    40.8,
+    -10.0
+   ],
+   [
+    525,
+    24.4,
+    28.8,
+    16.4,
+    39.6,
+    40.4,
+    -10.0
+   ],
+   [
+    530,
+    24.7,
+    29.1,
+    16.6,
+    39.8,
+    40.1,
+    -9.7
+   ],
+   [
+    535,
+    24.8,
+    29.3,
+    16.7,
+    40.1,
+    41.0,
+    -9.7
+   ],
+   [
+    540,
+    25.0,
+    29.2,
+    17.2,
+    40.6,
+    41.5,
+    -9.4
+   ],
+   [
+    545,
+    25.2,
+    29.4,
+    17.6,
+    41.3,
+    42.6,
+    -9.3
+   ],
+   [
+    550,
+    25.2,
+    29.3,
+    17.8,
+    41.3,
+    43.6,
+    -9.6
+   ],
+   [
+    555,
+    24.8,
+    28.9,
+    17.3,
+    40.7,
+    43.6,
+    -9.5
+   ],
+   [
+    560,
+    24.8,
+    28.9,
+    17.5,
+    40.6,
+    43.4,
+    -9.4
+   ],
+   [
+    565,
+    24.9,
+    28.9,
+    17.6,
+    40.7,
+    43.4,
+    -9.3
+   ],
+   [
+    570,
+    24.9,
+    29.0,
+    17.3,
+    40.8,
+    43.7,
+    -9.4
+   ],
+   [
+    575,
+    25.0,
+    29.1,
+    17.4,
+    41.1,
+    44.0,
+    -9.4
+   ],
+   [
+    580,
+    25.4,
+    29.5,
+    18.0,
+    41.6,
+    44.3,
+    -9.0
+   ],
+   [
+    585,
+    25.4,
+    29.4,
+    18.1,
+    41.3,
+    43.9,
+    -8.6
+   ],
+   [
+    590,
+    25.6,
+    29.5,
+    18.6,
+    41.1,
+    43.9,
+    -8.6
+   ],
+   [
+    595,
+    25.7,
+    29.5,
+    18.8,
+    41.4,
+    44.1,
+    -8.8
+   ],
+   [
+    600,
+    25.9,
+    29.7,
+    19.0,
+    41.0,
+    43.6,
+    -8.4
+   ],
+   [
+    605,
+    25.7,
+    29.9,
+    18.1,
+    40.9,
+    44.5,
+    -8.9
+   ],
+   [
+    610,
+    26.2,
+    30.1,
+    19.1,
+    40.9,
+    44.0,
+    -8.4
+   ],
+   [
+    615,
+    26.2,
+    30.1,
+    19.2,
+    40.8,
+    43.5,
+    -7.7
+   ],
+   [
+    620,
+    26.5,
+    30.3,
+    19.7,
+    40.8,
+    43.6,
+    -7.5
+   ],
+   [
+    625,
+    26.7,
+    30.5,
+    19.9,
+    41.1,
+    43.9,
+    -7.7
+   ],
+   [
+    630,
+    26.8,
+    30.5,
+    20.0,
+    41.2,
+    43.6,
+    -7.6
+   ],
+   [
+    635,
+    26.5,
+    30.3,
+    19.8,
+    41.2,
+    43.2,
+    -7.2
+   ],
+   [
+    640,
+    26.6,
+    30.4,
+    19.7,
+    41.2,
+    42.6,
+    -6.9
+   ],
+   [
+    645,
+    26.8,
+    30.8,
+    19.6,
+    41.1,
+    41.7,
+    -6.4
+   ],
+   [
+    650,
+    26.8,
+    30.9,
+    19.5,
+    41.1,
+    41.5,
+    -6.4
+   ],
+   [
+    655,
+    27.0,
+    30.9,
+    19.9,
+    40.9,
+    41.8,
+    -6.4
+   ],
+   [
+    660,
+    27.1,
+    31.1,
+    20.0,
+    41.1,
+    42.0,
+    -6.6
+   ],
+   [
+    665,
+    27.2,
+    31.3,
+    19.9,
+    41.1,
+    41.6,
+    -6.4
+   ],
+   [
+    670,
+    27.3,
+    31.4,
+    19.9,
+    41.2,
+    41.9,
+    -6.3
+   ],
+   [
+    675,
+    27.5,
+    31.6,
+    20.1,
+    41.4,
+    41.9,
+    -6.3
+   ],
+   [
+    680,
+    27.8,
+    31.9,
+    20.2,
+    41.5,
+    42.6,
+    -6.4
+   ],
+   [
+    685,
+    28.0,
+    31.9,
+    20.7,
+    41.7,
+    42.9,
+    -6.3
+   ],
+   [
+    690,
+    28.0,
+    32.1,
+    20.7,
+    42.0,
+    43.4,
+    -6.4
+   ],
+   [
+    695,
+    28.1,
+    32.0,
+    21.0,
+    42.1,
+    43.8,
+    -6.8
+   ],
+   [
+    700,
+    28.0,
+    31.9,
+    20.9,
+    42.2,
+    44.4,
+    -6.6
+   ],
+   [
+    705,
+    28.1,
+    31.9,
+    21.2,
+    42.4,
+    45.0,
+    -6.7
+   ],
+   [
+    710,
+    28.3,
+    32.1,
+    21.4,
+    42.8,
+    45.5,
+    -6.6
+   ],
+   [
+    715,
+    28.3,
+    32.1,
+    21.3,
+    43.0,
+    46.0,
+    -7.0
+   ],
+   [
+    720,
+    28.2,
+    32.0,
+    21.1,
+    42.9,
+    45.9,
+    -7.0
+   ],
+   [
+    725,
+    28.0,
+    31.8,
+    21.1,
+    43.0,
+    45.6,
+    -6.7
+   ],
+   [
+    730,
+    27.9,
+    31.8,
+    20.9,
+    43.1,
+    45.4,
+    -6.6
+   ],
+   [
+    737,
+    27.4,
+    31.0,
+    20.8,
+    39.9,
+    40.5,
+    -7.8
+   ],
+   [
+    742,
+    29.6,
+    32.8,
+    23.9,
+    42.8,
+    40.7,
+    -7.9
+   ],
+   [
+    747,
+    27.0,
+    31.6,
+    18.6,
+    35.1,
+    30.6,
+    -9.9
+   ],
+   [
+    752,
+    26.9,
+    31.5,
+    18.5,
+    41.6,
+    40.3,
+    -8.1
+   ],
+   [
+    757,
+    27.4,
+    31.6,
+    19.7,
+    42.7,
+    46.3,
+    -7.8
+   ],
+   [
+    762,
+    27.3,
+    30.7,
+    21.2,
+    42.3,
+    42.8,
+    -8.0
+   ],
+   [
+    767,
+    28.1,
+    30.8,
+    23.2,
+    42.4,
+    45.6,
+    -6.8
+   ],
+   [
+    772,
+    29.2,
+    32.1,
+    23.9,
+    42.8,
+    46.3,
+    -6.8
+   ],
+   [
+    777,
+    28.7,
+    32.4,
+    22.0,
+    42.1,
+    44.6,
+    -7.6
+   ],
+   [
+    782,
+    29.5,
+    33.8,
+    21.9,
+    42.5,
+    46.2,
+    -6.5
+   ],
+   [
+    787,
+    30.4,
+    34.6,
+    23.0,
+    43.6,
+    49.1,
+    -5.6
+   ],
+   [
+    792,
+    30.3,
+    33.9,
+    23.6,
+    43.2,
+    47.2,
+    -5.5
+   ],
+   [
+    797,
+    31.0,
+    34.0,
+    25.6,
+    42.5,
+    43.0,
+    -7.0
+   ],
+   [
+    802,
+    30.2,
+    34.3,
+    22.7,
+    42.0,
+    47.6,
+    -7.2
+   ],
+   [
+    807,
+    29.9,
+    33.7,
+    23.1,
+    42.5,
+    48.0,
+    -6.9
+   ],
+   [
+    812,
+    30.6,
+    33.9,
+    24.7,
+    42.8,
+    44.6,
+    -6.9
+   ],
+   [
+    822,
+    32.4,
+    36.6,
+    25.0,
+    44.2,
+    50.4,
+    -4.7
+   ],
+   [
+    832,
+    33.2,
+    37.1,
+    26.2,
+    44.8,
+    50.9,
+    -3.4
+   ],
+   [
+    842,
+    33.0,
+    36.3,
+    26.8,
+    46.6,
+    51.8,
+    -3.2
+   ],
+   [
+    852,
+    34.1,
+    37.6,
+    27.7,
+    47.2,
+    52.5,
+    -2.8
+   ],
+   [
+    862,
+    34.5,
+    38.4,
+    27.4,
+    48.8,
+    54.3,
+    -3.0
+   ],
+   [
+    872,
+    35.4,
+    38.9,
+    28.9,
+    49.1,
+    56.1,
+    -2.0
+   ],
+   [
+    882,
+    35.4,
+    39.2,
+    28.6,
+    51.0,
+    57.2,
+    -2.1
+   ],
+   [
+    892,
+    35.3,
+    39.1,
+    28.2,
+    50.5,
+    55.7,
+    0.5
+   ],
+   [
+    902,
+    36.0,
+    39.8,
+    29.0,
+    51.2,
+    56.8,
+    -1.5
+   ],
+   [
+    912,
+    36.2,
+    39.8,
+    29.6,
+    50.8,
+    58.1,
+    -0.3
+   ],
+   [
+    922,
+    37.4,
+    41.3,
+    30.3,
+    51.0,
+    56.3,
+    -1.2
+   ],
+   [
+    932,
+    37.1,
+    41.3,
+    29.5,
+    52.0,
+    59.1,
+    -1.1
+   ],
+   [
+    942,
+    37.2,
+    41.1,
+    30.3,
+    52.2,
+    59.7,
+    0.6
+   ],
+   [
+    952,
+    37.1,
+    40.9,
+    30.2,
+    52.4,
+    59.0,
+    0.7
+   ],
+   [
+    962,
+    37.1,
+    41.4,
+    29.3,
+    52.1,
+    59.6,
+    1.2
+   ],
+   [
+    972,
+    37.2,
+    41.5,
+    29.3,
+    53.4,
+    59.7,
+    1.6
+   ],
+   [
+    982,
+    37.8,
+    41.9,
+    30.2,
+    52.6,
+    60.3,
+    1.0
+   ],
+   [
+    992,
+    38.9,
+    42.8,
+    31.8,
+    53.1,
+    59.7,
+    1.6
+   ],
+   [
+    1002,
+    40.0,
+    44.0,
+    32.8,
+    53.2,
+    59.6,
+    2.1
+   ],
+   [
+    1012,
+    38.9,
+    43.5,
+    30.7,
+    53.3,
+    60.2,
+    2.9
+   ],
+   [
+    1022,
+    38.8,
+    42.5,
+    32.1,
+    52.9,
+    60.2,
+    3.2
+   ],
+   [
+    1032,
+    38.5,
+    42.2,
+    31.6,
+    53.1,
+    59.9,
+    3.0
+   ],
+   [
+    1042,
+    39.1,
+    42.2,
+    33.5,
+    52.8,
+    60.2,
+    2.0
+   ],
+   [
+    1052,
+    39.1,
+    42.7,
+    32.7,
+    53.1,
+    61.1,
+    2.4
+   ],
+   [
+    1062,
+    39.3,
+    43.3,
+    32.1,
+    53.9,
+    61.7,
+    2.0
+   ],
+   [
+    1072,
+    39.5,
+    42.7,
+    33.6,
+    53.8,
+    61.7,
+    2.0
+   ],
+   [
+    1082,
+    38.9,
+    42.3,
+    32.8,
+    53.6,
+    58.5,
+    1.7
+   ],
+   [
+    1092,
+    39.5,
+    43.3,
+    32.5,
+    54.6,
+    61.2,
+    2.7
+   ],
+   [
+    1102,
+    40.0,
+    43.8,
+    33.0,
+    54.3,
+    60.6,
+    2.6
+   ],
+   [
+    1112,
+    39.4,
+    43.7,
+    31.7,
+    54.4,
+    62.0,
+    2.8
+   ],
+   [
+    1122,
+    39.5,
+    44.1,
+    31.3,
+    54.6,
+    62.0,
+    3.3
+   ],
+   [
+    1132,
+    39.7,
+    43.9,
+    31.9,
+    54.7,
+    60.9,
+    2.6
+   ],
+   [
+    1142,
+    40.0,
+    44.4,
+    32.2,
+    55.0,
+    62.3,
+    3.3
+   ],
+   [
+    1152,
+    40.4,
+    44.2,
+    33.6,
+    54.8,
+    61.7,
+    3.3
+   ],
+   [
+    1162,
+    40.5,
+    44.5,
+    33.4,
+    54.6,
+    60.6,
+    4.5
+   ],
+   [
+    1172,
+    40.8,
+    44.9,
+    33.4,
+    54.4,
+    61.3,
+    4.6
+   ],
+   [
+    1182,
+    40.9,
+    44.8,
+    33.8,
+    55.2,
+    60.9,
+    4.2
+   ],
+   [
+    1192,
+    40.7,
+    45.1,
+    32.7,
+    55.6,
+    61.7,
+    4.8
+   ],
+   [
+    1202,
+    41.0,
+    45.1,
+    33.4,
+    54.6,
+    61.6,
+    4.9
+   ],
+   [
+    1212,
+    40.3,
+    44.2,
+    33.2,
+    55.1,
+    62.1,
+    3.3
+   ],
+   [
+    1222,
+    40.6,
+    44.4,
+    33.7,
+    54.5,
+    62.2,
+    4.0
+   ],
+   [
+    1232,
+    40.6,
+    45.2,
+    32.4,
+    55.3,
+    61.9,
+    3.6
+   ],
+   [
+    1242,
+    40.2,
+    43.7,
+    33.7,
+    53.5,
+    60.1,
+    3.9
+   ],
+   [
+    1252,
+    40.8,
+    44.8,
+    33.3,
+    54.0,
+    59.5,
+    4.3
+   ],
+   [
+    1262,
+    40.8,
+    45.3,
+    32.5,
+    55.1,
+    61.6,
+    4.2
+   ],
+   [
+    1272,
+    41.0,
+    44.8,
+    34.1,
+    55.4,
+    62.7,
+    3.7
+   ],
+   [
+    1282,
+    40.9,
+    44.1,
+    35.3,
+    54.3,
+    61.6,
+    3.5
+   ],
+   [
+    1292,
+    41.5,
+    45.1,
+    34.8,
+    55.3,
+    61.4,
+    3.8
+   ],
+   [
+    1302,
+    40.8,
+    44.9,
+    33.3,
+    55.5,
+    62.2,
+    4.2
+   ],
+   [
+    1314,
+    41.8,
+    45.9,
+    34.4,
+    55.4,
+    63.4,
+    5.5
+   ],
+   [
+    1324,
+    42.7,
+    46.4,
+    35.9,
+    55.6,
+    62.9,
+    8.3
+   ],
+   [
+    1334,
+    42.2,
+    45.4,
+    36.4,
+    55.6,
+    62.2,
+    8.9
+   ],
+   [
+    1344,
+    42.2,
+    45.8,
+    35.6,
+    55.7,
+    63.2,
+    9.6
+   ],
+   [
+    1354,
+    42.1,
+    45.7,
+    35.7,
+    54.9,
+    63.2,
+    12.1
+   ],
+   [
+    1364,
+    43.4,
+    47.8,
+    35.5,
+    56.5,
+    63.3,
+    10.4
+   ],
+   [
+    1374,
+    44.0,
+    47.1,
+    38.3,
+    56.1,
+    63.2,
+    12.1
+   ],
+   [
+    1384,
+    42.7,
+    46.4,
+    36.1,
+    57.4,
+    62.7,
+    13.0
+   ],
+   [
+    1394,
+    43.1,
+    47.4,
+    35.2,
+    57.9,
+    64.6,
+    13.8
+   ],
+   [
+    1404,
+    43.3,
+    47.4,
+    35.8,
+    57.4,
+    63.8,
+    13.4
+   ],
+   [
+    1414,
+    44.1,
+    48.4,
+    36.3,
+    58.0,
+    63.7,
+    14.3
+   ],
+   [
+    1424,
+    44.2,
+    48.4,
+    36.3,
+    56.8,
+    63.7,
+    14.6
+   ],
+   [
+    1434,
+    44.2,
+    48.6,
+    36.1,
+    57.6,
+    63.8,
+    12.5
+   ],
+   [
+    1444,
+    44.2,
+    48.2,
+    36.8,
+    57.9,
+    63.9,
+    13.2
+   ],
+   [
+    1454,
+    44.5,
+    47.5,
+    39.1,
+    57.0,
+    63.5,
+    14.9
+   ],
+   [
+    1464,
+    44.8,
+    48.5,
+    38.1,
+    55.8,
+    63.0,
+    13.8
+   ],
+   [
+    1474,
+    44.5,
+    48.4,
+    37.5,
+    57.5,
+    63.5,
+    14.8
+   ],
+   [
+    1484,
+    43.9,
+    48.0,
+    36.3,
+    57.1,
+    62.8,
+    14.5
+   ],
+   [
+    1494,
+    44.6,
+    48.9,
+    36.7,
+    56.6,
+    63.3,
+    14.1
+   ],
+   [
+    1504,
+    44.3,
+    48.8,
+    36.0,
+    57.0,
+    63.4,
+    15.8
+   ],
+   [
+    1514,
+    44.3,
+    48.3,
+    37.1,
+    56.3,
+    61.5,
+    15.2
+   ],
+   [
+    1524,
+    44.6,
+    48.7,
+    37.3,
+    57.6,
+    62.6,
+    16.2
+   ],
+   [
+    1534,
+    44.2,
+    48.1,
+    37.0,
+    57.8,
+    63.8,
+    15.1
+   ],
+   [
+    1544,
+    44.8,
+    49.5,
+    36.4,
+    58.2,
+    63.7,
+    15.5
+   ],
+   [
+    1554,
+    44.5,
+    48.9,
+    36.6,
+    58.8,
+    64.2,
+    16.3
+   ],
+   [
+    1564,
+    45.4,
+    49.7,
+    37.6,
+    58.2,
+    64.2,
+    16.7
+   ],
+   [
+    1574,
+    45.3,
+    49.2,
+    38.2,
+    57.6,
+    61.2,
+    17.3
+   ],
+   [
+    1584,
+    45.5,
+    49.8,
+    37.5,
+    56.7,
+    61.0,
+    18.2
+   ],
+   [
+    1594,
+    45.5,
+    50.0,
+    37.3,
+    58.4,
+    62.6,
+    17.4
+   ],
+   [
+    1604,
+    45.8,
+    49.9,
+    38.3,
+    56.9,
+    63.7,
+    16.4
+   ],
+   [
+    1614,
+    47.0,
+    50.8,
+    40.0,
+    57.7,
+    63.1,
+    17.7
+   ],
+   [
+    1624,
+    45.7,
+    49.4,
+    39.0,
+    57.4,
+    64.6,
+    16.5
+   ],
+   [
+    1634,
+    45.3,
+    49.7,
+    37.2,
+    58.1,
+    63.8,
+    14.3
+   ],
+   [
+    1644,
+    46.4,
+    51.0,
+    38.1,
+    58.8,
+    64.9,
+    17.0
+   ],
+   [
+    1654,
+    46.5,
+    51.2,
+    38.1,
+    59.3,
+    64.7,
+    18.5
+   ],
+   [
+    1664,
+    45.9,
+    50.0,
+    38.5,
+    59.1,
+    65.2,
+    17.8
+   ],
+   [
+    1674,
+    45.7,
+    49.2,
+    39.3,
+    58.4,
+    64.7,
+    17.0
+   ],
+   [
+    1684,
+    45.4,
+    49.4,
+    38.1,
+    58.0,
+    64.1,
+    16.1
+   ],
+   [
+    1694,
+    46.4,
+    50.0,
+    40.0,
+    58.8,
+    64.0,
+    18.2
+   ],
+   [
+    1704,
+    45.8,
+    49.8,
+    38.7,
+    58.7,
+    64.3,
+    19.1
+   ],
+   [
+    1714,
+    47.2,
+    51.2,
+    39.9,
+    59.1,
+    65.4,
+    19.7
+   ],
+   [
+    1724,
+    46.5,
+    50.8,
+    38.8,
+    59.2,
+    65.7,
+    18.7
+   ],
+   [
+    1734,
+    46.7,
+    50.7,
+    39.5,
+    58.6,
+    65.7,
+    19.4
+   ],
+   [
+    1744,
+    47.1,
+    51.2,
+    39.7,
+    58.6,
+    65.4,
+    19.5
+   ],
+   [
+    1754,
+    46.7,
+    51.2,
+    38.3,
+    58.8,
+    64.9,
+    20.0
+   ],
+   [
+    1764,
+    46.3,
+    50.2,
+    39.2,
+    58.2,
+    64.8,
+    17.8
+   ],
+   [
+    1774,
+    46.8,
+    50.9,
+    39.4,
+    59.3,
+    65.6,
+    18.5
+   ],
+   [
+    1784,
+    46.9,
+    50.4,
+    40.5,
+    58.0,
+    62.2,
+    18.1
+   ],
+   [
+    1794,
+    46.7,
+    50.3,
+    40.2,
+    58.3,
+    64.5,
+    19.2
+   ],
+   [
+    1804,
+    47.5,
+    50.8,
+    41.6,
+    58.7,
+    64.9,
+    17.1
+   ],
+   [
+    1814,
+    47.8,
+    51.5,
+    41.0,
+    59.3,
+    64.9,
+    19.0
+   ]
+  ],
+  "refs": [
+   {
+    "name": "Oracle MPC",
+    "name_zh": "oracle MPC",
+    "v": 98.5
+   },
+   {
+    "name": "Static-model MPC",
+    "name_zh": "静态模型MPC",
+    "v": 91.2
+   },
+   {
+    "name": "Self-tuning PID",
+    "name_zh": "自整定PID",
+    "v": 48.6
+   }
+  ]
+ },
+ "model": {
+  "repo": "M3rcyzzz/AIO1",
+  "url": "https://huggingface.co/M3rcyzzz/AIO1",
+  "label": "Open weights & code",
+  "label_zh": "开源权重与代码",
+  "links": [
+   {
+    "name": "Hugging Face",
+    "name_zh": "Hugging Face",
+    "url": "https://huggingface.co/M3rcyzzz/AIO1"
+   },
+   {
+    "name": "ModelScope",
+    "name_zh": "ModelScope",
+    "url": "https://www.modelscope.cn/models/M3rcyzzz/AIO1"
+   },
+   {
+    "name": "GitHub",
+    "name_zh": "GitHub",
+    "url": "https://github.com/M3rcyzzz/AIOGym2"
+   }
+  ]
+ }
+}

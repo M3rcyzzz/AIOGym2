@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+.claude/
+.vscode/
+build/
+.pytest_cache/
+*.egg-info/
+benchmark-runs/
+data/validation/
+.env
+.env.*
+*.pem
+*.key

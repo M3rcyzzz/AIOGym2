@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiogym2"
+version = "0.2.0"
+description = "AIO: one pretrained end-to-end neural network as a general APC controller (differentiable process simulator, spatio-temporal attention policy, trainer)"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# Install PyTorch first for your CUDA/MPS/CPU environment
+dependencies = [
+    "numpy>=2",
+    "scipy",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "safetensors"]
+# release/huggingface/export.py and the released folder's loader
+release = ["safetensors"]
+# aio.sim.gym: the Gymnasium vector environment
+gym = ["gymnasium>=1.0"]
+# aio.sim.validate: reference properties, the DaISy spreadsheets, BSM1 by bsm2-python
+validate = ["CoolProp", "thermo", "openpyxl", "bsm2-python"]
+
+[tool.setuptools.packages.find]
+include = ["aio*"]
+
+[tool.setuptools.package-data]
+aio = ["sim/*.json", "sim/bench_data/*/*"]

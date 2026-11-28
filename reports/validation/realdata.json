@@ -1,0 +1,811 @@
+{
+ "csth": {
+  "valves": {
+   "cold water valve": {
+    "gamma": 1.225,
+    "gap": 0.0578532331418947,
+    "gap_in_family": 0.0578532331418947,
+    "first_open": [
+     0.0625,
+     0.09134615384615385
+    ],
+    "gain_ratio": 3.1666666666666643,
+    "turns": 2,
+    "points": 10
+   },
+   "hot water valve": {
+    "gamma": 0.7949999999999999,
+    "gap": 0.06432985696003346,
+    "gap_in_family": 0.06432985696003346,
+    "first_open": [
+     0.125,
+     0.12839815976578836
+    ],
+    "gain_ratio": 2.5611940298507454,
+    "turns": 1,
+    "points": 8
+   },
+   "steam valve": {
+    "gamma": 1.095,
+    "gap": 0.10762544305970212,
+    "gap_in_family": 0.10762544305970212,
+    "first_open": [
+     0.21875,
+     0.14893617021276598
+    ],
+    "gain_ratio": 6.364864864864869,
+    "turns": 2,
+    "points": 7
+   }
+  },
+  "sequences": {
+   "cold water flow disturbance": {
+    "sigma": 0.0053174937047173,
+    "lag1": 0.9706453530546425,
+    "slope": -2.4305643976607234
+   },
+   "level disturbance": {
+    "sigma": 0.0018023089991094344,
+    "lag1": -0.027697995469133565,
+    "slope": 0.03154913415776033
+   },
+   "temperature noise": {
+    "sigma": 0.0020884185985863596,
+    "lag1": 0.5890899616021118,
+    "slope": -0.8397023363028788
+   }
+  },
+  "shell": {
+   "gamma": [
+    0.6,
+    1.7
+   ],
+   "noise_sigma": [
+    0.0,
+    0.018
+   ]
+  }
+ },
+ "tanks": {
+  "ts": 4.0,
+  "samples": 1024,
+  "params": {
+   "k1": 0.06,
+   "k2": 0.04033,
+   "k3": 0.03799,
+   "k4": 0.05063,
+   "k5": 0.61804,
+   "off": -0.82059
+  },
+  "plant_est": 0.40804196842785206,
+  "plant_val": 0.47492691255008374,
+  "output_span": 7.836118104829481,
+  "overflow_samples": 37,
+  "linear_est": 0.5255269995776106,
+  "linear_val": 0.5896634040078059,
+  "linear_order": 3
+ },
+ "steps": {
+  "T1 to Heater": {
+   "samples": 139801,
+   "start": 70.69,
+   "end": 75.27,
+   "rise": 23709,
+   "overshoot": 0.01
+  },
+  "T1 to Reflux": {
+   "samples": 179802,
+   "start": 75.33,
+   "end": 67.38,
+   "rise": 94842,
+   "overshoot": 0.02
+  },
+  "T5 to Heater": {
+   "samples": 139801,
+   "start": 63.07,
+   "end": 67.76,
+   "rise": 41736,
+   "overshoot": 0.03
+  },
+  "T5 to Reflux": {
+   "samples": 179802,
+   "start": 66.95,
+   "end": 63.79,
+   "rise": 43576,
+   "overshoot": 0.03
+  },
+  "pairing": "T1 with Reflux, T5 with Heater",
+  "relative_gain": 1.63,
+  "speed": 2.27,
+  "percentile": {
+   "relative_gain": 63.7,
+   "speed": 42.0
+  }
+ },
+ "records": {
+  "dryer": {
+   "what": "industrial dryer: fuel, exhaust fan speed, raw material rate -> dry bulb, wet bulb, moisture",
+   "samples": 867,
+   "sampling_s": 10.0,
+   "inputs": 3,
+   "outputs": 3,
+   "lags": 40,
+   "fit": [
+    0.57,
+    0.59,
+    -0.72
+   ],
+   "outputs_kept": 2,
+   "settled": 0.22,
+   "pairing": [
+    [
+     0,
+     0
+    ],
+    [
+     1,
+     1
+    ]
+   ],
+   "features": {
+    "rga_max": {
+     "value": 1.894,
+     "percentile": 68.0
+    },
+    "rga_min": {
+     "value": 1.894,
+     "percentile": 82.5
+    },
+    "cond": {
+     "value": 5.4,
+     "percentile": 48.9
+    },
+    "theta": {
+     "value": 1.0,
+     "percentile": 6.5
+    },
+    "tau": {
+     "value": 17.0,
+     "percentile": 53.7
+    },
+    "ratio": {
+     "value": 0.059,
+     "percentile": 1.7
+    },
+    "late": {
+     "value": 1.0,
+     "percentile": 15.6
+    },
+    "speed": {
+     "value": 1.556,
+     "percentile": 24.7
+    }
+   },
+   "loops": [
+    {
+     "theta": 1.0,
+     "tau": 27.0,
+     "ratio": 0.037037037037037035,
+     "spread": 3.323172294538938,
+     "settled": 0.21618234871350406
+    },
+    {
+     "theta": 1.0,
+     "tau": 17.0,
+     "ratio": 0.058823529411764705,
+     "spread": 3.0566641141546045,
+     "settled": 0.14152516902900514
+    }
+   ],
+   "pairs": [
+    {
+     "theta": {
+      "value": 1.0,
+      "percentile": 8.8
+     },
+     "tau": {
+      "value": 27.0,
+      "percentile": 66.1
+     },
+     "ratio": {
+      "value": 0.037,
+      "percentile": 2.3
+     },
+     "spread": {
+      "value": 3.323,
+      "percentile": 75.8
+     },
+     "settled": {
+      "value": 0.216,
+      "percentile": 98.0
+     },
+     "alike": 0.0152
+    },
+    {
+     "theta": {
+      "value": 1.0,
+      "percentile": 8.8
+     },
+     "tau": {
+      "value": 17.0,
+      "percentile": 55.1
+     },
+     "ratio": {
+      "value": 0.059,
+      "percentile": 4.6
+     },
+     "spread": {
+      "value": 3.057,
+      "percentile": 70.3
+     },
+     "settled": {
+      "value": 0.142,
+      "percentile": 96.2
+     },
+     "alike": 0.0464
+    }
+   ]
+  },
+  "evaporator": {
+   "what": "four-stage evaporator: feed, steam, cooling water -> dry matter, product flow, product temperature",
+   "samples": 6305,
+   "sampling_s": null,
+   "inputs": 3,
+   "outputs": 3,
+   "lags": 80,
+   "fit": [
+    0.86,
+    0.83,
+    0.88
+   ],
+   "outputs_kept": 3,
+   "settled": 0.11,
+   "pairing": [
+    [
+     0,
+     1
+    ],
+    [
+     1,
+     0
+    ],
+    [
+     2,
+     2
+    ]
+   ],
+   "features": {
+    "rga_max": {
+     "value": 1.853,
+     "percentile": 67.5
+    },
+    "rga_min": {
+     "value": 0.524,
+     "percentile": 20.1
+    },
+    "cond": {
+     "value": 5.685,
+     "percentile": 50.4
+    },
+    "theta": {
+     "value": 2.0,
+     "percentile": 19.6
+    },
+    "tau": {
+     "value": 12.0,
+     "percentile": 44.0
+    },
+    "ratio": {
+     "value": 0.667,
+     "percentile": 43.9
+    },
+    "late": {
+     "value": 8.0,
+     "percentile": 95.8
+    },
+    "speed": {
+     "value": 7.2,
+     "percentile": 82.7
+    }
+   },
+   "loops": [
+    {
+     "theta": 2.0,
+     "tau": 3.0,
+     "ratio": 0.6666666666666666,
+     "spread": 1.94979307128053,
+     "settled": 0.016695625287775684
+    },
+    {
+     "theta": 4.0,
+     "tau": 32.0,
+     "ratio": 0.125,
+     "spread": 3.209086818735634,
+     "settled": 0.11493611786542768
+    },
+    {
+     "theta": 1.0,
+     "tau": 12.0,
+     "ratio": 0.08333333333333333,
+     "spread": 3.612494754535521,
+     "settled": 0.022600586094203345
+    }
+   ],
+   "pairs": [
+    {
+     "theta": {
+      "value": 2.0,
+      "percentile": 23.8
+     },
+     "tau": {
+      "value": 3.0,
+      "percentile": 21.1
+     },
+     "ratio": {
+      "value": 0.667,
+      "percentile": 57.3
+     },
+     "spread": {
+      "value": 1.95,
+      "percentile": 42.2
+     },
+     "settled": {
+      "value": 0.017,
+      "percentile": 73.9
+     },
+     "alike": 0.5019
+    },
+    {
+     "theta": {
+      "value": 4.0,
+      "percentile": 44.9
+     },
+     "tau": {
+      "value": 32.0,
+      "percentile": 70.4
+     },
+     "ratio": {
+      "value": 0.125,
+      "percentile": 11.5
+     },
+     "spread": {
+      "value": 3.209,
+      "percentile": 74.4
+     },
+     "settled": {
+      "value": 0.115,
+      "percentile": 94.8
+     },
+     "alike": 0.1581
+    },
+    {
+     "theta": {
+      "value": 1.0,
+      "percentile": 8.8
+     },
+     "tau": {
+      "value": 12.0,
+      "percentile": 47.2
+     },
+     "ratio": {
+      "value": 0.083,
+      "percentile": 7.0
+     },
+     "spread": {
+      "value": 3.612,
+      "percentile": 80.1
+     },
+     "settled": {
+      "value": 0.023,
+      "percentile": 76.5
+     },
+     "alike": 0.0904
+    }
+   ]
+  },
+  "glassfurnace": {
+   "what": "glass furnace: two heating inputs, one cooling input -> six temperatures",
+   "samples": 1247,
+   "sampling_s": null,
+   "inputs": 3,
+   "outputs": 6,
+   "lags": 40,
+   "fit": [
+    0.41,
+    0.41,
+    0.43,
+    0.54,
+    0.85,
+    0.77
+   ],
+   "outputs_kept": 3,
+   "settled": 0.08,
+   "pairing": [
+    [
+     0,
+     4
+    ],
+    [
+     1,
+     3
+    ],
+    [
+     2,
+     5
+    ]
+   ],
+   "features": {
+    "rga_max": {
+     "value": 30.253,
+     "percentile": 99.0
+    },
+    "rga_min": {
+     "value": -3.729,
+     "percentile": 2.2
+    },
+    "cond": {
+     "value": 195.427,
+     "percentile": 98.0
+    },
+    "theta": {
+     "value": 2.0,
+     "percentile": 19.6
+    },
+    "tau": {
+     "value": 13.0,
+     "percentile": 46.6
+    },
+    "ratio": {
+     "value": 0.308,
+     "percentile": 14.3
+    },
+    "late": {
+     "value": 4.0,
+     "percentile": 82.2
+    },
+    "speed": {
+     "value": 1.308,
+     "percentile": 17.1
+    }
+   },
+   "loops": [
+    {
+     "theta": 4.0,
+     "tau": 13.0,
+     "ratio": 0.3076923076923077,
+     "spread": 2.5023212136128556,
+     "settled": 0.0696036015508934
+    },
+    {
+     "theta": 2.0,
+     "tau": 13.0,
+     "ratio": 0.15384615384615385,
+     "spread": 2.945273781417532,
+     "settled": 0.0785695963139118
+    },
+    {
+     "theta": 1.0,
+     "tau": 12.0,
+     "ratio": 0.08333333333333333,
+     "spread": 5.815133660707313,
+     "settled": 0.06932688580173929
+    }
+   ],
+   "pairs": [
+    {
+     "theta": {
+      "value": 4.0,
+      "percentile": 44.9
+     },
+     "tau": {
+      "value": 13.0,
+      "percentile": 49.0
+     },
+     "ratio": {
+      "value": 0.308,
+      "percentile": 27.8
+     },
+     "spread": {
+      "value": 2.502,
+      "percentile": 62.1
+     },
+     "settled": {
+      "value": 0.07,
+      "percentile": 90.5
+     },
+     "alike": 0.4011
+    },
+    {
+     "theta": {
+      "value": 2.0,
+      "percentile": 23.8
+     },
+     "tau": {
+      "value": 13.0,
+      "percentile": 49.0
+     },
+     "ratio": {
+      "value": 0.154,
+      "percentile": 14.0
+     },
+     "spread": {
+      "value": 2.945,
+      "percentile": 69.2
+     },
+     "settled": {
+      "value": 0.079,
+      "percentile": 91.9
+     },
+     "alike": 0.1926
+    },
+    {
+     "theta": {
+      "value": 1.0,
+      "percentile": 8.8
+     },
+     "tau": {
+      "value": 12.0,
+      "percentile": 47.2
+     },
+     "ratio": {
+      "value": 0.083,
+      "percentile": 7.0
+     },
+     "spread": {
+      "value": 5.815,
+      "percentile": 92.7
+     },
+     "settled": {
+      "value": 0.069,
+      "percentile": 90.5
+     },
+     "alike": 0.1071
+    }
+   ]
+  },
+  "exchanger": {
+   "what": "steam-heated exchanger: liquid flow -> outlet temperature",
+   "samples": 4000,
+   "sampling_s": 1.0,
+   "inputs": 1,
+   "outputs": 1,
+   "lags": 120,
+   "fit": [
+    0.73
+   ],
+   "outputs_kept": 1,
+   "settled": 0.03,
+   "pairing": [
+    [
+     0,
+     0
+    ]
+   ],
+   "features": {
+    "theta": {
+     "value": 1.0,
+     "percentile": 8.8
+    },
+    "tau": {
+     "value": 4.0,
+     "percentile": 25.8
+    },
+    "ratio": {
+     "value": 0.25,
+     "percentile": 22.6
+    }
+   },
+   "loops": [
+    {
+     "theta": 1.0,
+     "tau": 4.0,
+     "ratio": 0.25,
+     "spread": 3.3428313319973655,
+     "settled": 0.03428464540688758
+    }
+   ],
+   "pairs": [
+    {
+     "theta": {
+      "value": 1.0,
+      "percentile": 8.8
+     },
+     "tau": {
+      "value": 4.0,
+      "percentile": 25.8
+     },
+     "ratio": {
+      "value": 0.25,
+      "percentile": 22.6
+     },
+     "spread": {
+      "value": 3.343,
+      "percentile": 76.1
+     },
+     "settled": {
+      "value": 0.034,
+      "percentile": 81.5
+     },
+     "alike": 0.3653
+    }
+   ]
+  },
+  "heating": {
+   "what": "halogen lamp over a steel plate: drive voltage -> plate temperature",
+   "samples": 801,
+   "sampling_s": 2.0,
+   "inputs": 1,
+   "outputs": 1,
+   "lags": 150,
+   "fit": [
+    0.88
+   ],
+   "outputs_kept": 1,
+   "settled": 0.08,
+   "pairing": [
+    [
+     0,
+     0
+    ]
+   ],
+   "features": {
+    "theta": {
+     "value": 4.0,
+     "percentile": 44.9
+    },
+    "tau": {
+     "value": 31.0,
+     "percentile": 69.6
+    },
+    "ratio": {
+     "value": 0.129,
+     "percentile": 11.8
+    }
+   },
+   "loops": [
+    {
+     "theta": 4.0,
+     "tau": 31.0,
+     "ratio": 0.12903225806451613,
+     "spread": 4.796143162136286,
+     "settled": 0.08284789818182614
+    }
+   ],
+   "pairs": [
+    {
+     "theta": {
+      "value": 4.0,
+      "percentile": 44.9
+     },
+     "tau": {
+      "value": 31.0,
+      "percentile": 69.6
+     },
+     "ratio": {
+      "value": 0.129,
+      "percentile": 11.9
+     },
+     "spread": {
+      "value": 4.796,
+      "percentile": 90.5
+     },
+     "settled": {
+      "value": 0.083,
+      "percentile": 92.2
+     },
+     "alike": 0.1663
+    }
+   ]
+  },
+  "prior": {
+   "batch": {
+    "episodes": 4096,
+    "seed": 7,
+    "plants": 2661,
+    "pairs": 11388
+   },
+   "quantiles": [
+    0.01,
+    0.05,
+    0.5,
+    0.95,
+    0.99
+   ],
+   "plants": {
+    "rga_max": [
+     0.37,
+     0.736,
+     1.201,
+     11.995,
+     29.593
+    ],
+    "rga_min": [
+     -14.928,
+     0.094,
+     0.957,
+     6.606,
+     15.039
+    ],
+    "cond": [
+     1.0,
+     1.182,
+     5.588,
+     96.722,
+     361.427
+    ],
+    "theta": [
+     1.0,
+     1.0,
+     5.0,
+     57.0,
+     78.0
+    ],
+    "tau": [
+     0.5,
+     2.0,
+     15.0,
+     76.0,
+     92.59
+    ],
+    "ratio": [
+     0.048,
+     0.158,
+     0.833,
+     4.0,
+     8.0
+    ],
+    "late": [
+     0.0,
+     0.0,
+     2.0,
+     7.5,
+     12.639
+    ],
+    "speed": [
+     1.0,
+     1.0,
+     2.75,
+     15.492,
+     32.677
+    ]
+   },
+   "pairs": {
+    "theta": [
+     1.0,
+     1.0,
+     5.0,
+     63.0,
+     88.0
+    ],
+    "tau": [
+     0.5,
+     1.0,
+     14.0,
+     84.0,
+     105.13
+    ],
+    "ratio": [
+     0.024,
+     0.062,
+     0.526,
+     3.0,
+     6.0
+    ],
+    "spread": [
+     1.163,
+     1.3,
+     2.116,
+     7.982,
+     25.562
+    ],
+    "settled": [
+     0.0,
+     0.0,
+     0.0,
+     0.119,
+     0.279
+    ]
+   }
+  }
+ }
+}

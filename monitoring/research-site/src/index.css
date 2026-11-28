@@ -1,0 +1,219 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Tier0 Design System tokens (github.com/FREEZONEX/Tier0-Design-System, tokens/core.css and
+   tokens/product.css), mapped onto the shadcn/ui variables. Product surface: white canvas,
+   near-black primary, lime only for highlight and selection, thin borders, 4 px radius,
+   IBM Plex Sans / Mono. Colour is set here only; components use the semantic names. */
+:root {
+  --fx-black: #050b14;
+  --fx-lime: #b2ed1d;
+  --fx-deep-green: #73b200;
+  --fx-green-1: #f0fbd2;
+  --fx-green-2: #ddf59c;
+  --fx-green-4: #ccf368;
+  --fx-black-4: #585c62;
+  --fx-black-2: #acaeb1;
+  --fx-black-1: #cdced0;
+
+  --radius: 4px;
+  --background: #ffffff;
+  --foreground: var(--fx-black);
+  --card: #ffffff;
+  --card-foreground: var(--fx-black);
+  --popover: #ffffff;
+  --popover-foreground: var(--fx-black);
+  --primary: var(--fx-black);
+  --primary-foreground: #ffffff;
+  --secondary: #f5f5f5;
+  --secondary-foreground: var(--fx-black);
+  --muted: #f5f5f5;
+  --muted-foreground: var(--fx-black-4);
+  --accent: var(--fx-green-1);
+  --accent-foreground: var(--fx-black);
+  --destructive: #b42318;
+  --border: #e6e6e6;
+  --input: #cccccc;
+  --ring: var(--fx-deep-green);
+  --surface: #f9f9f9;
+  --highlight: var(--fx-lime);
+
+  /* status (ISA-101: colour only for state) */
+  --ok: #2f6b00;
+  --ok-bg: var(--fx-green-1);
+  --warn: #b45309;
+  --warn-bg: #fdf1e4;
+  --alarm: #b42318;
+  --alarm-bg: #fbe9e7;
+
+  /* chart series: validated categorical order (dataviz validate_palette, light, all pairs) */
+  --series-tank: #1baf7a;
+  --series-tep: #eb6834;
+  --series-oracle: #2a78d6;
+  --series-ref: #585c62;
+  --series-ref-2: #acaeb1;
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --grid: #ededed;
+
+  --font-sans: "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --shadow-card: 1px 2px 8px 0 rgba(5, 11, 20, 0.1);
+}
+
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --radius-sm: calc(var(--radius) - 1px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-surface: var(--surface);
+  --color-highlight: var(--highlight);
+  --color-ok: var(--ok);
+  --color-ok-bg: var(--ok-bg);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
+  --color-alarm: var(--alarm);
+  --color-alarm-bg: var(--alarm-bg);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --shadow-card: var(--shadow-card);
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html { scroll-behavior: smooth; scroll-padding-top: 108px; -webkit-text-size-adjust: 100%; }
+  @media (min-width: 768px) { html { scroll-padding-top: 72px; } }
+  body { @apply bg-background text-foreground font-sans antialiased; font-size: 14px; line-height: 1.6; }
+  .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+/* ---------- process screens (ISA-101 high-performance style: neutral equipment, colour for state) ---------- */
+.hmi-svg { display: block; width: 100%; height: auto; font-family: var(--font-sans); }
+.hmi-item { cursor: pointer; outline: none; }
+.hmi-hit { fill: transparent; stroke: transparent; stroke-width: 1.2; }
+.hmi-item:hover .hmi-hit, .hmi-item:focus-visible .hmi-hit { fill: #f0fbd280; stroke: var(--fx-black-2); stroke-dasharray: 4 3; }
+.hmi-item.selected .hmi-hit { fill: #f0fbd2b0; stroke: var(--fx-deep-green); stroke-dasharray: none; }
+.hmi-item:focus-visible .hmi-hit { stroke: var(--fx-deep-green); stroke-width: 2.4; }
+.hmi-vessel-bg { fill: #fff; }
+.hmi-vessel { fill: none; stroke: #6b7076; stroke-width: 1.6; }
+.hmi-vessel.alarm { stroke: var(--alarm); stroke-width: 2.4; }
+.hmi-vessel.warn { stroke: var(--warn); stroke-width: 2.4; }
+.hmi-liquid { fill: #dfe6ec; }
+.hmi-surface { stroke: #8a99a6; stroke-width: 1.5; }
+.hmi-limit { stroke: var(--alarm); stroke-width: 1.2; opacity: .5; }
+.hmi-tag { font-size: 13px; font-weight: 600; fill: var(--fx-black); }
+.hmi-sub { font-size: 12px; fill: var(--fx-black-4); }
+.hmi-note { font-size: 12px; fill: var(--fx-black-4); }
+.hmi-value { font: 500 13px var(--font-mono); fill: var(--fx-black); paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+.hmi-value.warn { fill: var(--warn); }
+.hmi-value.alarm { fill: var(--alarm); }
+.hmi-clock { font: 500 26px var(--font-mono); fill: var(--fx-black); letter-spacing: -.5px; }
+.hmi-pump { fill: #fff; stroke: #8b9096; stroke-width: 1.7; }
+.hmi-pump.running { fill: #f5f5f5; stroke: var(--fx-black); }
+.hmi-rotor { stroke: var(--fx-black); stroke-width: 2.2; stroke-linecap: round; fill: none; }
+.hmi-hub { fill: var(--fx-black); }
+.hmi-bar-bg { fill: #e6e6e6; }
+.hmi-bar { fill: var(--fx-black-4); }
+.hmi-rail { stroke: #d9d9d9; stroke-width: 2; }
+.hmi-band { fill: var(--fx-green-2); }
+.hmi-sp { stroke: var(--fx-black); stroke-width: 2; }
+.hmi-pointer { fill: var(--fx-black); }
+.hmi-pointer.warn { fill: var(--warn); }
+.hmi-pipe { fill: none; stroke: #d4d6d9; stroke-width: 3; stroke-linejoin: round; }
+.hmi-flow { fill: none; stroke-width: 3; stroke-dasharray: 6 8; stroke-linejoin: round; transition: opacity .3s; }
+.hmi-p1 { stroke: #4f7fae; }
+.hmi-p2 { stroke: #7a6cbf; }
+.hmi-dr { stroke: #8b9096; }
+.hmi-node { fill: #8b9096; }
+.hmi-ft { fill: #fff; stroke: #9aa0a6; }
+.hmi-ft-t { font-size: 9px; fill: var(--fx-black-4); }
+.hmi-reservoir { fill: #f5f5f5; stroke: #aeb2b7; stroke-width: 1.5; }
+.hmi-reservoir-l { stroke: #d4d6d9; }
+.tep-util { fill: none; stroke: #d0d8de; stroke-width: 1.6; stroke-dasharray: 5 4; }
+.tep-uflow { stroke: #87a3b8; stroke-width: 1.8; stroke-dasharray: 4 10; }
+.tep-pflow { stroke: #4f7fae; }
+.tep-event-line.on { stroke: #f1c9a3; }
+.hmi-flow.ev { stroke: var(--warn); }
+.hmi-value.tep-small { font-size: 11px; }
+.tep-ftag { font-size: 11px; font-weight: 600; fill: var(--fx-black); }
+.tep-fval { font: 500 11px var(--font-mono); fill: var(--fx-black); paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+.tep-agitator, .tep-coil { fill: none; stroke: #6b7076; stroke-width: 1.5; }
+.tep-tray { stroke: #b4b8bd; }
+.tep-itag { font-size: 12px; }
+.tep-chip { fill: var(--warn-bg); stroke: #f1c9a3; }
+.tep-chip-t { font-size: 11px; fill: var(--warn); }
+.ph-upset { fill: none; stroke: #d4d6d9; stroke-width: 3; stroke-dasharray: 6 4; }
+.ph-acid { stroke: #c0705f; }
+.ph-base { stroke: #6b78b8; }
+.ph-buf { stroke: #aeb2b7; stroke-width: 2; }
+.ph-sensor { fill: #fff; stroke: #9aa0a6; stroke-width: 1; }
+.ph-sensor.warn { stroke: var(--warn); stroke-width: 2.4; }
+.ph-valve { fill: #f5f5f5; stroke: #6b7076; stroke-width: 1.5; }
+.ph-hband { fill: #fff; opacity: .28; }
+.hmi-value.ph-small { font-size: 11px; }
+
+/* APC suite screens (replay/suiteScreens.ts) */
+.qt-band { fill: var(--fx-green-2); opacity: .8; }
+.qt-sp { stroke: var(--fx-black); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.sh-u1 { stroke: #4f7fae; }
+.sh-u2 { stroke: #7a6cbf; }
+.sh-u3 { stroke: #c0705f; }
+.bsm-qa { stroke: #4f8f8a; }
+.bsm-anox { fill: #ece8df; }
+.bsm-aer { fill: #e3eaf0; }
+.bsm-diffuser { stroke: #8a99a6; stroke-width: 2; stroke-linecap: round; }
+.bsm-bubble { fill: #fff; stroke: #8a99a6; stroke-width: 1; }
+
+/* trends under each screen */
+.hmi-trend-svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+.hmi-t-band { fill: var(--fx-green-1); }
+.hmi-t-sp { fill: none; stroke: var(--fx-black-4); stroke-width: 1.1; stroke-dasharray: 4 3; }
+.hmi-t-limit { stroke: #e3a59c; stroke-dasharray: 3 3; }
+.hmi-t-event { stroke: var(--ev, var(--warn)); stroke-dasharray: 2 3; opacity: .85; }
+.hmi-t-evn { font: 600 9px var(--font-mono); fill: var(--ev, var(--warn)); }
+.hmi-t-axis { font: 10px var(--font-mono); fill: #8b9096; }
+.hmi-t-ghost { fill: none; stroke: var(--fx-black-2); stroke-width: 1.3; }
+.hmi-t-line { fill: none; stroke: var(--fx-black); stroke-width: 1.6; stroke-linejoin: round; }
+.hmi-t-v1 { stroke: #4f7fae; }
+.hmi-t-v2 { stroke: #7a6cbf; }
+.hmi-t-cursor { stroke: var(--fx-black-4); stroke-width: 1; }
+.hmi-t-hit { fill: transparent; cursor: crosshair; }
+.tep-t-out { fill: none; stroke: var(--warn); stroke-width: 1.8; stroke-linejoin: round; }
+.ph-t-meas { fill: none; stroke: #8b9096; stroke-width: 1.1; stroke-dasharray: 3 3; }
+.hmi-t-line.ph-t-base { stroke: #6b78b8; }
+.hmi-t-line.ph-t-acid { stroke: #c0705f; }
+
+/* event kinds: colour says the kind, not good or bad */
+.ev-setpoint { --ev: #2a78d6; }
+.ev-process { --ev: #7a5aa6; }
+.ev-disturbance { --ev: #b45309; }
+.ev-other { --ev: #6b7076; }
+
+/* a tab row that scrolls sideways on a phone without showing a scrollbar */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}

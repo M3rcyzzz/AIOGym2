@@ -1,0 +1,40 @@
+{
+ "hex": {
+  "1": {
+   "local_max": 0.2027,
+   "share": 0.0688
+  },
+  "2": {
+   "local_max": 0.0747,
+   "share": 0.0268
+  },
+  "4": {
+   "local_max": 0.0242,
+   "share": 0.0092
+  },
+  "8": {
+   "local_max": 0.0071,
+   "share": 0.0028
+  },
+  "plant_substeps": 1
+ },
+ "bio": {
+  "1": {
+   "local_max": 0.4946,
+   "share": 0.0468
+  },
+  "2": {
+   "local_max": 0.2389,
+   "share": 0.022
+  },
+  "4": {
+   "local_max": 0.0942,
+   "share": 0.0089
+  },
+  "8": {
+   "local_max": 0.0354,
+   "share": 0.0031
+  },
+  "plant_substeps": 2
+ }
+}
