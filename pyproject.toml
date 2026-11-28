@@ -10,21 +10,26 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 # Install PyTorch first for your CUDA/MPS/CPU environment
 dependencies = [
-    "numpy>=2",
-    "scipy",
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "safetensors"]
+test = ["pytest>=8", "safetensors", "scipy"]
 # release/huggingface/export.py and the released folder's loader
 release = ["safetensors"]
 # aio.sim.gym: the Gymnasium vector environment
 gym = ["gymnasium>=1.0"]
 # aio.sim.validate: reference properties, the DaISy spreadsheets, BSM1 by bsm2-python
-validate = ["CoolProp", "thermo", "openpyxl", "bsm2-python"]
+validate = ["scipy", "CoolProp", "thermo", "openpyxl", "bsm2-python"]
 
 [tool.setuptools.packages.find]
 include = ["aio*"]
 
 [tool.setuptools.package-data]
 aio = ["sim/*.json", "sim/bench_data/*/*"]
+
+# Keep offline validation reference trajectories out of wheel distributions
+# (top-level data/, including data/bsm1/*, is outside aio* and not packaged).
+[tool.setuptools.exclude-package-data]
+aio = ["sim/validate/data/*"]
+"aio.sim.validate" = ["data/*"]

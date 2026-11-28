@@ -1,0 +1,554 @@
+% ==============================================================================
+% CITATIONS.bib — Literature, Thermodynamic, and Benchmark References
+%
+% Strictly compiled from verified citations recorded in:
+%   - aio/sim/plants*.py, aio/sim/props_fit.py, aio/sim/lit.py
+%   - aio/sim/validate/*.py, aio/sim/validate/data/README.md, data/bsm1/README.md
+%   - docs/validation.md, docs/validation-data.md, docs/sim.md, docs/heldout.md
+%
+% Fields not present in repository sources (e.g., DOIs, end pages, or unrecorded
+% author initials) are intentionally omitted rather than fabricated.
+%
+% ------------------------------------------------------------------------------
+% Coverage Index — All 30 Mechanistic Plant Registry Entries
+%   PLANTS (15):
+%     1.  qtank    -> johansson2000quadruple, johansson1998acc
+%     2.  ph       -> henson1994ph, hu1999ph, medi2021ph
+%     3.  vdv      -> klatt1998vdv, chen1995vdv
+%     4.  excstr   -> seborg_pdc
+%     5.  bio      -> bequette1998process, henson1997nonlinear
+%     6.  evap     -> newell1989evaporator, switalski1999evap
+%     7.  furnace  -> (original self-built two-pass fired heater; no external paper)
+%     8.  gasnet   -> (original self-built gas pressure-reducing line; no external paper)
+%     9.  hex      -> (original self-built heat-exchanger train; no external paper)
+%     10. column   -> skogestad1988column, skogestad_postlethwaite
+%     11. bldg     -> vdi6007_ibpsa, en442_modelica, boptest_ibpsa
+%     12. comp     -> gravdahl2004compressor
+%     13. rsr      -> larsson2003rsr
+%     14. amm      -> morud1998ammonia, straus2017ammonia, araujo2008ammonia
+%     15. heater   -> ibrahim2010heater, ibrahim2008heater, thermo_pkg
+%   LARGE (6):
+%     16. tep      -> downs1993tep, ricker1996tep
+%     17. tep9     -> downs1993tep, ricker1996tep (9-MV variant of tep)
+%     18. bsm1     -> alex2008bsm1, gernaey2014bsm (validation data: bsm2python2025)
+%     19. btcol    -> thermo_pkg, coolprop, bell2016helmholtz (self-built flowsheet)
+%     20. meoh     -> thermo_pkg, coolprop (self-built flowsheet)
+%     21. debut    -> thermo_pkg, coolprop (self-built flowsheet)
+%   HELDOUT (9):
+%     22. boiler   -> bell1987boiler
+%     23. wo       -> williams1960otto
+%     24. mma      -> maner1996mma
+%     25. cryst    -> randolph_larson_cryst
+%     26. boiler2  -> astrom2000boiler, wagner1993iapws
+%     27. vam      -> luyben1998vam, chen2003vam
+%     28. gaslib   -> pfetsch2015gaslib, himpe2021morgen, trr154_gasnetworks
+%     29. refrig   -> bejarano2018refrig, coolprop
+%     30. badgwell -> badgwell1998heater
+% ==============================================================================
+
+% ------------------------------------------------------------------------------
+% 1. Core Mechanistic Plants (aio/sim/plants*.py)
+% ------------------------------------------------------------------------------
+
+@article{johansson2000quadruple,
+  author  = {Johansson, K. H.},
+  title   = {The quadruple-tank process},
+  journal = {IEEE Transactions on Control Systems Technology},
+  volume  = {8},
+  number  = {3},
+  year    = {2000},
+  note    = {Plant key: qtank (aio/sim/plants.py)}
+}
+
+@misc{johansson1998acc,
+  author       = {Johansson and Nunes},
+  title        = {Quadruple-tank process rig, parameter table, operating points, and transfer matrices},
+  howpublished = {American Control Conference (ACC)},
+  year         = {1998},
+  note         = {Cross-checked reference for qtank (aio/sim/validate/papers.py)}
+}
+
+@article{henson1994ph,
+  author  = {Henson, M. A. and Seborg, D. E.},
+  title   = {Adaptive nonlinear control of a {pH} neutralization process},
+  journal = {IEEE Transactions on Control Systems Technology},
+  volume  = {2},
+  number  = {3},
+  year    = {1994},
+  note    = {Plant key: ph (aio/sim/plants.py)}
+}
+
+@article{hu1999ph,
+  author  = {Hu and Rangaiah},
+  title   = {Reprint of the {Henson--Seborg} {pH} neutralization nominal parameter table},
+  journal = {Chemical Engineering Science},
+  volume  = {54},
+  year    = {1999},
+  note    = {Validation cross-check for ph (aio/sim/validate/papers.py)}
+}
+
+@article{medi2021ph,
+  author  = {Medi and Asadbeigi},
+  title   = {Reprint of the {Henson--Seborg} {pH} neutralization nominal table ({Table 3})},
+  journal = {Heliyon},
+  volume  = {7},
+  year    = {2021},
+  note    = {Validation cross-check for ph (aio/sim/validate/papers.py)}
+}
+
+@article{klatt1998vdv,
+  author  = {Klatt, K.-U. and Engell, S.},
+  title   = {Gain-scheduling trajectory control of a continuous stirred tank reactor},
+  journal = {Computers \& Chemical Engineering},
+  volume  = {22},
+  number  = {4/5},
+  year    = {1998},
+  note    = {Plant key: vdv (aio/sim/plants.py)}
+}
+
+@misc{chen1995vdv,
+  author       = {Chen and Kremling and Allgoewer},
+  title        = {{Van de Vusse} {CSTR} benchmark},
+  howpublished = {European Control Conference (ECC)},
+  year         = {1995},
+  note         = {Plant key: vdv (aio/sim/plants.py, aio/sim/validate/papers.py)}
+}
+
+@misc{seborg_pdc,
+  author = {Seborg, D. E. and Edgar, T. F. and Mellichamp, D. A. and Doyle, F. J.},
+  title  = {Process Dynamics and Control},
+  note   = {Exothermic CSTR, Section 2.4.6, Eqs. 2-66 and 2-68, Table 2.3 (after Hicks \& Ray). Plant key: excstr (aio/sim/plants.py)}
+}
+
+@misc{bequette1998process,
+  author = {Bequette, B. W.},
+  title  = {Process Dynamics: Modeling, Analysis and Simulation},
+  year   = {1998},
+  note   = {Module 8: Biochemical reactor with substrate inhibition. Plant key: bio (aio/sim/plants.py)}
+}
+
+@misc{henson1997nonlinear,
+  author = {Henson, M. A. and Seborg, D. E.},
+  title  = {Nonlinear Process Control},
+  year   = {1997},
+  note   = {Chapter 4: Continuous fermenter product equation (after Jobses). Plant key: bio (aio/sim/plants.py)}
+}
+
+@book{newell1989evaporator,
+  author    = {Newell, R. B. and Lee, P. L.},
+  title     = {Applied Process Control: A Case Study},
+  publisher = {Prentice Hall},
+  year      = {1989},
+  note      = {Chapter 2: Forced-circulation evaporator. Plant key: evap (aio/sim/plants.py)}
+}
+
+@article{switalski1999evap,
+  author  = {Switalski},
+  title   = {Reprint of the {Newell--Lee} evaporator steady-state table ({Table 1})},
+  journal = {Control and Cybernetics},
+  volume  = {28},
+  number  = {2},
+  year    = {1999},
+  note    = {Validation cross-check for evap (aio/sim/validate/papers.py)}
+}
+
+@article{skogestad1988column,
+  author  = {Skogestad, S. and Morari, M.},
+  title   = {Understanding the dynamic behavior of distillation columns},
+  journal = {Industrial \& Engineering Chemistry Research},
+  volume  = {27},
+  year    = {1988},
+  note    = {Distillation column A; companion MATLAB files colamod.m and cola\_lv.m at https://skoge.folk.ntnu.no/book/matlab\_m/cola/. Plant key: column (aio/sim/plants.py)}
+}
+
+@misc{skogestad_postlethwaite,
+  author = {Skogestad and Postlethwaite},
+  title  = {Multivariable Feedback Control},
+  note   = {Column A linearised gains and RGA reference (aio/sim/validate/papers.py)}
+}
+
+@misc{vdi6007_ibpsa,
+  author = {{VDI 6007 / IBPSA}},
+  title  = {Two-element reduced-order thermal zone model ({ThermalZones.ReducedOrder.RC.TwoElements})},
+  note   = {Zone model structure for bldg (aio/sim/plants\_bldg.py); nominal walls fitted to BOPTEST bestest\_hydronic}
+}
+
+@misc{en442_modelica,
+  author = {{EN 442-2 / Modelica Buildings}},
+  title  = {Radiator heat-transfer model ({Fluid.HeatExchangers.Radiators.RadiatorEN442\_2})},
+  note   = {Radiator equations and water/metal capacity parameters for bldg (aio/sim/plants\_bldg.py)}
+}
+
+@article{gravdahl2004compressor,
+  author  = {Gravdahl and Willems and de Jager and Egeland},
+  title   = {Modeling of surge in free-spool centrifugal compressors: experimental validation},
+  journal = {Journal of Propulsion and Power},
+  volume  = {20},
+  number  = {5},
+  year    = {2004},
+  note    = {BBC VTR 160L turbocharger rig (see also authors' CDC 2000 paper). Plant key: comp (aio/sim/plants\_comp.py)}
+}
+
+@article{larsson2003rsr,
+  author  = {Larsson and Govatsmark and Skogestad and Yu},
+  title   = {Control structure selection for reactor, separator, and recycle processes},
+  journal = {Industrial \& Engineering Chemistry Research},
+  volume  = {42},
+  pages   = {1225},
+  year    = {2003},
+  note    = {After Wu \& Yu (1996). Plant key: rsr (aio/sim/plants\_rsr.py)}
+}
+
+@article{morud1998ammonia,
+  author  = {Morud and Skogestad},
+  title   = {Analysis of instability in an industrial ammonia reactor},
+  journal = {AIChE Journal},
+  volume  = {44},
+  number  = {4},
+  pages   = {888},
+  year    = {1998},
+  note    = {Three-bed quench-cooled ammonia converter. Plant key: amm (aio/sim/plants\_amm.py)}
+}
+
+@misc{straus2017ammonia,
+  author = {Straus and Skogestad},
+  title  = {Economic {NMPC} for heat-integrated chemical reactors},
+  year   = {2017},
+  note   = {Temkin-Pyzhev rate constants and cell formulation for amm (aio/sim/plants\_amm.py)}
+}
+
+@misc{araujo2008ammonia,
+  author = {Ara{\'u}jo and Skogestad},
+  title  = {Ammonia synthesis converter bed void-fraction note},
+  year   = {2008},
+  note   = {Void fraction (0.33) used for gas holdup in amm (aio/sim/plants\_amm.py)}
+}
+
+@article{ibrahim2010heater,
+  author  = {Ibrahim and Al-Qassimi},
+  title   = {Simulation of heat transfer in the convection section of fired process heaters},
+  journal = {Periodica Polytechnica Chemical Engineering},
+  volume  = {54},
+  number  = {1},
+  pages   = {33},
+  year    = {2010},
+  note    = {Homs crude heater 21 H-1 data sheet. Plant key: heater (aio/sim/plants\_htr.py)}
+}
+
+@article{ibrahim2008heater,
+  author  = {Ibrahim and Al-Qassimi},
+  title   = {Fired process heater 21 {H-1} thermal analysis},
+  journal = {Periodica Polytechnica Chemical Engineering},
+  volume  = {52},
+  number  = {2},
+  pages   = {61},
+  year    = {2008},
+  note    = {Companion study for Homs heater 21 H-1. Plant key: heater (aio/sim/plants\_htr.py)}
+}
+
+% ------------------------------------------------------------------------------
+% 2. Large-Scale & Held-Out Mechanistic Plants
+% ------------------------------------------------------------------------------
+
+@article{downs1993tep,
+  author  = {Downs and Vogel},
+  title   = {Tennessee {Eastman} industrial challenge process ({TEFUNC} / {TEINIT})},
+  journal = {Computers \& Chemical Engineering},
+  volume  = {17},
+  number  = {3},
+  year    = {1993},
+  note    = {Plant keys: tep, tep9 (aio/sim/plants\_tep.py); revised archive URL recorded in aio/sim/validate/tep\_native\_build.py}
+}
+
+@article{ricker1996tep,
+  author  = {Ricker},
+  title   = {Decentralized control structure for the {Tennessee Eastman} process},
+  journal = {Journal of Process Control},
+  volume  = {6},
+  number  = {4},
+  year    = {1996},
+  note    = {Regulatory PI layer for tep, tep9 (aio/sim/plants\_tep.py)}
+}
+
+@misc{alex2008bsm1,
+  author = {Alex and others},
+  title  = {Benchmark Simulation Model no. 1 ({BSM1})},
+  year   = {2008},
+  note   = {IWA BSM1 open-loop steady state and Appendix 4 dry-weather benchmark results. Plant key: bsm1 (aio/sim/plants\_bsm.py)}
+}
+
+@misc{gernaey2014bsm,
+  author = {Gernaey and others},
+  title  = {Benchmark Simulation Model no. 1 and no. 2 ({BSM1}/{BSM2})},
+  year   = {2014},
+  note   = {BSM1/BSM2 specification and temperature corrections. Plant key: bsm1 (aio/sim/plants\_bsm.py)}
+}
+
+@misc{bsm2python2025,
+  author       = {{FAU-EVT}},
+  title        = {bsm2-python (version 0.0.16)},
+  howpublished = {\url{https://github.com/FAU-EVT/bsm2-python}},
+  year         = {2025},
+  note         = {BSD 3-Clause License; source of offline validation files data/bsm1/dryinfluent.csv and aio/sim/validate/data/bsm1\_dry.npz only}
+}
+
+@misc{bell1987boiler,
+  author = {Bell and {\AA}str{\"o}m},
+  title  = {Dynamic model for a 160 {MW} drum boiler-turbine unit (operating point 4)},
+  year   = {1987},
+  note   = {See also Pellegrinetti \& Bentsman (1996) cited in docs/heldout.md. Plant key: boiler (aio/sim/plants\_heldout.py)}
+}
+
+@misc{williams1960otto,
+  author = {Williams and Otto},
+  title  = {{Williams--Otto} chemical process model},
+  year   = {1960},
+  note   = {Reaction kinetics for held-out plant key: wo (aio/sim/plants\_heldout.py)}
+}
+
+@misc{maner1996mma,
+  author = {Maner and Doyle and Ogunnaike and Pearson},
+  title  = {Methyl methacrylate ({MMA}) solution polymerization {CSTR} model},
+  year   = {1996},
+  note   = {Held-out plant key: mma (aio/sim/plants\_heldout.py)}
+}
+
+@misc{randolph_larson_cryst,
+  author = {Randolph and Larson},
+  title  = {Population balance moment equations for continuous {MSMPR} cooling crystallization},
+  note   = {Held-out plant key: cryst (aio/sim/plants\_heldout.py)}
+}
+
+@article{astrom2000boiler,
+  author  = {{\AA}str{\"o}m and Bell},
+  title   = {Drum-boiler dynamics (160 {MW} unit {P16/G16}, {Oresundsverket})},
+  journal = {Automatica},
+  volume  = {36},
+  pages   = {363},
+  year    = {2000},
+  note    = {Four-state model (Eqs. 24-25) and Figs. 8-13 plant data; parameters from report TFRT-7577 Appendix B. Held-out plant key: boiler2 (aio/sim/plants\_heldout.py)}
+}
+
+@misc{wagner1993iapws,
+  author = {Wagner and Pru{\ss}},
+  title  = {{IAPWS} supplementary release on saturation properties of ordinary water substance},
+  year   = {1993},
+  note   = {Used with IAPWS-IF97 Region 4 saturation temperature equation in boiler2 (aio/sim/plants\_heldout.py)}
+}
+
+@article{luyben1998vam,
+  author  = {Luyben and Tyreus},
+  title   = {Vinyl acetate monomer ({VAM}) industrial process model and plantwide control structure},
+  journal = {Computers \& Chemical Engineering},
+  volume  = {22},
+  year    = {1998},
+  note    = {Held-out plant key: vam (aio/sim/plants\_vam.py)}
+}
+
+@article{chen2003vam,
+  author  = {Chen and Dave and McAvoy and Luyben},
+  title   = {Vinyl acetate monomer ({VAM}) dynamic simulation},
+  journal = {Industrial \& Engineering Chemistry Research},
+  volume  = {42},
+  year    = {2003},
+  note    = {UMD C routines at https://terpconnect.umd.edu/\~{}mcavoy/VAC\%20Material/ (no license stated; not redistributed). Held-out plant key: vam (aio/sim/plants\_vam.py)}
+}
+
+@misc{pfetsch2015gaslib,
+  author       = {Pfetsch and others},
+  title        = {{GasLib-24} gas network benchmark library},
+  howpublished = {\url{https://gaslib.zib.de/}},
+  year         = {2015},
+  note         = {CC BY 3.0; compressor station maps from GasLib-24-v1-20211130.cs. Held-out plant key: gaslib (aio/sim/plants\_gaslib.py)}
+}
+
+@misc{himpe2021morgen,
+  author       = {Himpe and Grundel and Benner},
+  title        = {morgen: Model Order Reduction for Gas and Energy Networks (version 1.2)},
+  howpublished = {\url{https://github.com/gramian/morgen}},
+  year         = {2021},
+  note         = {BSD-2-Clause; GasLib24.net edge list and ode\_end discretization. Held-out plant key: gaslib (aio/sim/plants\_gaslib.py)}
+}
+
+@misc{trr154_gasnetworks,
+  author       = {{TRR154}},
+  title        = {InstationaryGasNetworks ({GasLib-24-no-resistor-sinus})},
+  howpublished = {\url{https://github.com/TRR154/InstationaryGasNetworks}},
+  note         = {Apache-2.0; transient exit mass-flow boundary data for gaslib (aio/sim/plants\_gaslib.py, aio/sim/validate/gaslib.py)}
+}
+
+@misc{bejarano2018refrig,
+  author       = {Bejarano and Alfaya and Rodr{\'i}guez and Ortega and Morilla},
+  title        = {{IFAC} Benchmark {PID} 2018: Refrigeration system},
+  howpublished = {UNED, \url{http://www.dia.uned.es/~fmorilla/benchmarkPID2018}},
+  year         = {2018},
+  note         = {Held-out plant key: refrig (aio/sim/plants\_refrig.py); reference runs RSBenchmark\_20170524\_13\_48 and RSBenchmark\_20170528\_22\_34}
+}
+
+@misc{badgwell1998heater,
+  author = {Badgwell},
+  title  = {Fired heater 5x5 linear {MPC} case ({mpcsim} / {Georgia Tech ChBE 4412})},
+  year   = {1998},
+  note   = {1998 MPC Workshop case (make\_heater\_cont.m, heater\_mpcsim.m, HeaterModelCont.mat, heaterData.mat). Held-out plant key: badgwell (aio/sim/plants\_badgwell.py)}
+}
+
+% ------------------------------------------------------------------------------
+% 3. Thermodynamic Property Packages & Reference Models
+% ------------------------------------------------------------------------------
+
+@misc{coolprop,
+  author = {{CoolProp}},
+  title  = {{CoolProp} thermophysical property library},
+  note   = {Used offline for IAPWS-95 water, de Reuck \& Craven methanol, GERG-2008/Helmholtz reference EOS (aio/sim/props\_fit.py, aio/sim/validate/refprops.py), and R404A fits (CoolProp 7 in aio/sim/plants\_refrig.py)}
+}
+
+@misc{thermo_pkg,
+  author = {{thermo}},
+  title  = {thermo: Chemical properties component of {Chemical Engineering Design Library} (version 0.6.1)},
+  note   = {Used offline for Peng-Robinson + ChemSep kij, ChemSep NRTL, modified UNIFAC-Dortmund (DOUFIP2016/DOUFSG) in aio/sim/props\_fit.py and flue-gas enthalpies in aio/sim/plants\_htr.py}
+}
+
+@misc{bell2016helmholtz,
+  author = {Bell and Lemmon},
+  title  = {Multi-fluid {Helmholtz} mixing parameters for benzene--toluene},
+  year   = {2016},
+  note   = {Reference property comparison in aio/sim/validate/refprops.py and docs/validation.md}
+}
+
+% ------------------------------------------------------------------------------
+% 4. Literature Multiloop Benchmarks (aio/sim/lit.py) & Control References
+% ------------------------------------------------------------------------------
+
+@misc{wood1973wb,
+  author = {Wood and Berry},
+  title  = {Methanol--water distillation column 2x2 transfer matrix},
+  year   = {1973},
+  note   = {Prior-coverage benchmark key: wb (aio/sim/lit.py)}
+}
+
+@misc{ogunnaike1979ory,
+  author = {Ogunnaike and Ray},
+  title  = {Ethanol--water distillation column 3x3 transfer matrix},
+  year   = {1979},
+  note   = {Prior-coverage benchmark key: ory (aio/sim/lit.py)}
+}
+
+@misc{tyreus1979ty,
+  author = {Tyreus},
+  title  = {Stabiliser 3x3 transfer matrix},
+  year   = {1979},
+  note   = {Reproduced via Huang \& Lin (2006). Prior-coverage benchmark key: ty (aio/sim/lit.py)}
+}
+
+@misc{alatiqi1986al,
+  author = {Alatiqi and Luyben},
+  title  = {Side-stream distillation column 3x3 subsystem},
+  year   = {1986},
+  note   = {Reproduced via Huang \& Lin (2006). Prior-coverage benchmark key: al (aio/sim/lit.py)}
+}
+
+@article{huang2006multiloop,
+  author  = {Huang and Lin},
+  title   = {Multiloop distillation column benchmark models},
+  journal = {Industrial \& Engineering Chemistry Research},
+  volume  = {45},
+  pages   = {3161},
+  year    = {2006},
+  note    = {Verification source for wb, ty, al in aio/sim/lit.py}
+}
+
+@article{vu2010multiloop,
+  author  = {Vu and Lee},
+  title   = {Multiloop distillation column benchmark models},
+  journal = {ISA Transactions},
+  volume  = {49},
+  pages   = {79},
+  year    = {2010},
+  note    = {Verification source for wb and ory signs in aio/sim/lit.py}
+}
+
+@misc{edet2018pid,
+  author       = {Edet and Katebi},
+  title        = {{Ogunnaike--Ray} benchmark parameters},
+  howpublished = {IFAC Conference on Advances in PID Control (IFAC PID 2018)},
+  year         = {2018},
+  note         = {Verification source for ory magnitudes in aio/sim/lit.py}
+}
+
+@article{lundstrom1995dmc,
+  author  = {Lundstr{\"o}m and Lee and Morari and Skogestad},
+  title   = {Limitations of dynamic matrix control},
+  journal = {Computers \& Chemical Engineering},
+  year    = {1995},
+  note    = {Referenced in docs/sim.md regarding DMC behavior on lightly damped plants}
+}
+
+@misc{qin2003mpc,
+  author = {Qin and Badgwell},
+  title  = {Industrial model predictive control target calculation and nonsquare plants},
+  year   = {2003},
+  note   = {Referenced in docs/sim.md for resting-value prioritization on fat plants}
+}
+
+% ------------------------------------------------------------------------------
+% 5. External Validation Emulators & Real-Plant Datasets (aio/sim/validate/)
+% ------------------------------------------------------------------------------
+
+@misc{boptest_ibpsa,
+  author       = {{IBPSA Project 1}},
+  title        = {{BOPTEST}: Building Optimization Performance Tests},
+  howpublished = {\url{https://github.com/ibpsa/project1-boptest}},
+  note         = {BSD-3-Clause; evaluated at commit a29024f (1.0.0-dev) in aio/sim/validate/boptest.py and docs/validation.md}
+}
+
+@misc{daisy_kuleuven,
+  author       = {{KU Leuven (SISTA)}},
+  title        = {{DaISy}: Database for the Identification of Systems},
+  howpublished = {\url{https://ftp.esat.kuleuven.be/pub/SISTA/data/}},
+  note         = {Free for research, cite DaISy; process\_industry/ and thermic/ records validated in aio/sim/validate/realdata.py}
+}
+
+@misc{thornhill2008csth,
+  author       = {Thornhill and Patwardhan and Shah},
+  title        = {Continuous stirred tank heater ({CSTH}) pilot plant benchmark},
+  howpublished = {Zenodo record 10093059, \url{https://zenodo.org/records/10093059}},
+  year         = {2008},
+  note         = {CC BY 4.0; valve curves, noise, and disturbances validated in aio/sim/validate/realdata.py}
+}
+
+@misc{schoukens_cascaded_tanks,
+  author       = {Schoukens and Mattsson and Wigren and No{\"e}l},
+  title        = {Cascaded tanks benchmark with overflow},
+  howpublished = {\url{https://www.nonlinearbenchmark.org/benchmarks/cascaded-tanks}},
+  note         = {CC BY 4.0 (4TU); validated in aio/sim/validate/realdata.py}
+}
+
+@misc{tum2026column,
+  author       = {{TUM}},
+  title        = {Continuous distillation pilot plant dataset (580 h, 30 s)},
+  howpublished = {Scientific Data / Zenodo record 17628963, \url{https://zenodo.org/records/17628963}},
+  year         = {2026},
+  note         = {CC BY 4.0; documented in docs/validation-data.md and aio/sim/validate/fetch.py}
+}
+
+@misc{arweiler_batch_distillation,
+  author       = {Arweiler and others},
+  title        = {Batch distillation dataset (119 runs with paired simulations)},
+  howpublished = {Zenodo record 20411905, \url{https://zenodo.org/records/20411905}},
+  note         = {CC BY 4.0; documented in docs/validation-data.md and aio/sim/validate/fetch.py}
+}
+
+@misc{pronto_cranfield,
+  author       = {{Cranfield University}},
+  title        = {{PRONTO} heterogeneous benchmark dataset for multiphase flow},
+  howpublished = {Zenodo record 1341583, \url{https://zenodo.org/records/1341583}},
+  note         = {CC BY 4.0; documented in docs/validation-data.md and aio/sim/validate/fetch.py}
+}
+
+@misc{manipal2026column,
+  author       = {{MIT Manipal}},
+  title        = {Pilot distillation column 2x2 open-loop step response dataset},
+  howpublished = {Zenodo record 22763516, \url{https://zenodo.org/records/22763516}},
+  year         = {2026},
+  note         = {CC BY 4.0; validated in aio/sim/validate/realdata.py}
+}
