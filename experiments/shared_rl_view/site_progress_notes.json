@@ -1,26 +1,32 @@
 {
- "as_of": "2026-11-28T23:23:00+08:00",
+ "as_of": "2026-11-29T02:00:00+08:00",
  "status": {
-  "pill": "Stage 10 round 330 · 48×20 breaks 66 (+10.0 vs PID) · blind 22.2 · non-level 52.0",
-  "pill_zh": "第十阶段第 330 轮 · 48×20 首破 66（+10.0 超 PID）· 盲控 22.2 · 不带液位 52.0"
+  "pill": "Stage 10 round 420 · 12×5 raw 48.8 beats PID · EMA 48.3 · 24×10 60.6",
+  "pill_zh": "第十阶段第 420 轮 · 12×5 实时 48.8 首超 PID · 平均 48.3 · 24×10 创 60.6"
  },
  "insights": {
-  "finding_title": "Stage 10 rounds 320–330 shattered three more landmark barriers: 48×20 broke 66 for the first time at 66.2 (+10.0 full points ahead of self-tuning PID), 12×5 non-level broke 52 (52.0 EMA / 52.3 raw, surpassing PID 52.2 on raw weights), and hidden-pairing surged to 22.2 (5.7× Stage 8).",
-  "finding": "Two-thirds through its 16-hour schedule (10.63 h, round 335 live on the fresh 96 GB Blackwell GPU at 73–90 s/row, zero allocation retries, zero bad samples), Stage 10 has locked seven straight 12×5 evaluations in 47.2–47.8 EMA while setting major records across the board: round 320 pushed 12×5 non-level past 52 for the first time (52.0 EMA / 52.3 raw, surpassing self-tuning PID 52.2 on raw weights) and sent hidden-pairing (blind) surging past 22 to 22.2 EMA / 20.5 raw (5.7× Stage 8; overall 47.4 EMA / 47.4 raw); round 330 broke 66 on 48×20 for the first time at 66.2 (+10.0 full points above self-tuning PID 56.2; non-level record 82.5, post-event 68.8, violations 10.5%, 50.0% win), lifted 12×5 post-event recovery to a record 50.6 (overall 47.6 EMA / 47.6 raw, levels 40.5, non-level 51.6 EMA / 51.9 raw, blind 20.7 EMA / 20.3 raw, episode cost 238.8k), and held 24×10 at 59.3–59.4 (peak 60.2 at round 300).",
-  "bottleneck_title": "With ~5.4 hours (~180+ rounds) left in the cosine cooldown (learning rate 2.0e-5), Stage 10 leads self-tuning PID by +10.0 on 48×20 and +7.2 on 24×10, has matched PID on 12×5 non-level (52.0–52.3 vs. 52.2), and sits 0.8 points below PID overall on 12×5 (47.8 EMA / 48.0 raw vs. 48.6).",
-  "bottleneck": "Remaining 12×5 gap is concentrated almost entirely in the hardest 45+-step high-purity separation loops and integrating-level edge cases; our multi-agent pipeline audit has already mapped out 3–4× VRAM reduction, ~2× speedup, zero-CU validation offload, and hard-regime curriculum upgrades for Stage 11.",
-  "next_title": "Finish Stage 10 final ~180 rounds toward 12×5 past self-tuning PID (48.6), then run the full 8-family mechanistic refresh and roll out the upgraded cloud+local pipeline.",
-  "next": "As soon as 12×5 moving-average clears self-tuning PID (48.6) or Stage 10 completes, run a fresh full 8-family zero-shot mechanistic industrial exam, refresh all four dynamic replays, and publish updated open weights across GitHub, Hugging Face, and ModelScope."
+  "finding_title": "Stage 10 rounds 390–420 cleared three major self-tuning PID milestones: raw 12×5 beat PID for the first time (48.7 → 48.8 vs. 48.6), moving-average 12×5 reached 48.3 (only 0.3 behind PID) with non-level EMA beating PID four straight times (52.2–52.5 vs. 52.2), and 24×10 hit a new all-time high of 60.6 (+7.6 above PID).",
+  "finding": "Four-fifths through its 16-hour schedule (13.17 h, round 428 live at 73–91 s/row, zero allocation retries, zero bad samples), Stage 10 locked four consecutive 12×5 evaluations in 48.0–48.3 EMA while setting records across every scale: round 340 pushed 48×20 to a new all-time high of 66.3 (+10.1 above self-tuning PID 56.2); round 390 lifted 12×5 EMA to a new record 48.3 (raw 48.7, first time beating PID 48.6 on full 12×5), pushed non-level EMA past PID for the first time at 52.5 (raw 52.8), lifted post-event recovery to a record 51.1, drove violations to a record-low 34.3% and reversals to 31.2%, and pushed 24×10 to 60.5; round 400 lifted raw 12×5 further to 48.8 (raw non-level 53.2, +1.0 above PID), hit hidden-pairing records of 22.1 EMA / 22.7 raw, and pushed 24×10 to an all-time high of 60.6 (+7.6 above PID); rounds 410–420 held 48.0 EMA (non-level 52.2–52.5, round-420 pre-event record 42.1, 24×10 59.7–59.8, 48×20 65.0–65.4).",
+  "bottleneck_title": "With ~2.8 hours (~100 rounds) left in the cosine cooldown (learning rate 1.0e-5), Stage 10 beats self-tuning PID on 48×20 (+10.1), 24×10 (+7.6), 12×5 non-level EMA (+0.3), and 12×5 raw (+0.2), sitting just 0.3 points below PID on 12×5 EMA (48.3 vs. 48.6).",
+  "bottleneck": "The final 0.3-point EMA gap on 12×5 sits in integrating-level edge cases (40.8 vs. PID 42.0) and extreme 45+-step dead-time loops; the upgraded cloud+local hybrid training pipeline (3× faster local GPU throughput, zero-credit async validation, and hard-case curriculum) is finishing live end-to-end verification ahead of Stage 11.",
+  "next_title": "Complete the final ~2.8 hours of Stage 10, then refresh the full 8-family mechanistic exam, dynamic replays, and public open weights.",
+  "next": "Once Stage 10 finishes (or 12×5 EMA clears 48.6), run a fresh exact 8-family zero-shot mechanistic industrial exam, regenerate all four dynamic replays, and publish updated open weights across GitHub, Hugging Face, and ModelScope."
  },
  "insights_zh": {
-  "finding_title": "第十阶段第 320–330 轮连破三大整数里程碑：48×20 历史首破 66 达 66.2（整整领先自整定PID 10.0 分）、12×5 不带液位首破 52（平均 52.0 / 实时 52.3 首次反超 PID 52.2）、盲控暴涨至 22.2（第八阶段 5.7 倍）。",
-  "finding": "第十阶段在新 96 GB Blackwell GPU 上走过三分之二赛程（10.63 / 16.0 小时、第 335 轮稳跑中，单轮 73–90 秒、零重试零坏样本），12×5 平均权重已连续七次验证稳锁 47.2–47.8 区间，并连创大关：第 320 轮 12×5 不带液位历史首破 52 达平均 52.0 / 实时 52.3（实时首次反超自整定PID 52.2），不告知配对盲控一举冲破 22 达平均 22.2 / 实时 20.5（第八阶段 5.7 倍；综合平均 47.4 / 实时 47.4）；第 330 轮 48×20 历史首破 66 达 66.2（整整领先自整定PID 56.2 达 10.0 分；不带液位创 82.5 新高、事件后 68.8、越限率 10.5%、胜率 50.0%），12×5 事件后恢复创 50.6 新高（综合平均 47.6 / 实时 47.6、带液位 40.5、不带液位平均 51.6 / 实时 51.9、盲控平均 20.7 / 实时 20.3、总代价 23.88 万），24×10 稳在 59.3–59.4（第 300 轮峰值 60.2）。",
-  "bottleneck_title": "余弦退火尚余约 5.4 小时（约 180+ 轮、学习率 2.0e-5），48×20（+10.0）与 24×10（+7.2）已大幅领先自整定PID，12×5 不带液位已追平/反超 PID（52.0–52.3 vs 52.2），综合距 PID（48.6）仅差 0.8 分。",
-  "bottleneck": "12×5 剩余差距几乎全部集中在 45 步以上高纯度分离慢对象与带液位极端工况；多机协作优化审计已为第十一阶段设计好显存降 3–4 倍、约 2 倍提速、零额度异步验证与难例课程升级方案。",
-  "next_title": "跑完第十阶段末段约 180 轮冲刺 12×5 综合反超自整定PID（48.6），随后全量刷新八类机理考与开源权重并上线新一代云端+本地混合流水线。",
-  "next": "一旦 12×5 平均权重实破自整定PID（48.6）或第十阶段收官，立即重跑八类工业机理零样本全考、刷新全部 4 组动态回放并同步更新 GitHub / Hugging Face / ModelScope 开源权重。"
+  "finding_title": "第十阶段第 390–420 轮接连跨越自整定PID 多项大关：12×5 实时权重历史首超自整定PID（48.7 → 48.8 vs 48.6），平均权重升至 48.3 新高（距 PID 仅差 0.3 分）且不带液位连续四测平均超 PID（52.2–52.5 vs 52.2），24×10 创 60.6 全历史新高（+7.6 超 PID）。",
+  "finding": "第十阶段已走过八成赛程（13.17 / 16.0 小时、第 428 轮稳跑中，单轮 73–91 秒、零重试零坏样本），12×5 平均权重连续四次验证稳站 48.0–48.3 区间，全尺寸多点破纪录：第 340 轮 48×20 创 66.3 全历史新高（领先自整定PID 56.2 达 10.1 分）；第 390 轮 12×5 平均权重创 48.3 新高、实时权重首破 PID 达 48.7（完整 12×5 历史首次反超自整定PID 48.6），不带液位平均首超 PID 达 52.5（实时 52.8），事件后恢复创 51.1 新高，越限率压至 34.3% 历史新低、换向率创 31.2% 新低，24×10 升至 60.5；第 400 轮 12×5 实时权重再涨至 48.8（不带液位实时 53.2、领先 PID 1.0 分），盲控创平均 22.1 / 实时 22.7 双新高，24×10 创 60.6 全历史新高（领先 PID 7.6 分）；第 410–420 轮稳在平均 48.0（不带液位 52.2–52.5、第 420 轮事件前创 42.1 新高，24×10 59.7–59.8，48×20 65.0–65.4）。",
+  "bottleneck_title": "余弦退火尚余约 2.8 小时（约 100 轮、学习率 1.0e-5），模型已在 48×20（+10.1）、24×10（+7.6）、12×5 不带液位平均（+0.3）和 12×5 实时（+0.2）全面领先自整定PID，12×5 平均距 PID（48.6）仅差 0.3 分。",
+  "bottleneck": "12×5 仅剩的 0.3 分平均差距主要来自带液位极端工况（40.8 vs PID 42.0）与 45 步以上超长纯滞后；新一代云端+本地混合训练管线（本地卡实测提速约 3 倍、零额度异步验证、难例强化采样）正在收尾真机闭环验证，备战第十一阶段。",
+  "next_title": "完成第十阶段最后约 2.8 小时收官冲刺，随后全量刷新八类机理考、动态回放与开源权重。",
+  "next": "第十阶段收官（或 12×5 平均实破 48.6）后，立即重跑八类工业机理零样本全考、更新全部 4 组动态回放，并将新权重同步发布至 GitHub / Hugging Face / ModelScope。"
  },
  "timeline": [
+  {
+   "date": "2026-11-29 02:00",
+   "tone": "good",
+   "text": "Stage 10 rounds 340–420 (13.17 h, 82% elapsed, round 428 live at 73–91 s/row, zero retries, zero bad samples) beat self-tuning PID on raw 12×5 and non-level EMA for the first time while locking four straight 12×5 evaluations in 48.0–48.3 EMA: round 340 hit an all-time 48×20 high of 66.3 (+10.1 above PID 56.2); round 390 lifted 12×5 EMA to a record 48.3 (0.3 from PID 48.6) and raw to 48.7 (first win over PID on full 12×5), pushed non-level EMA past PID at 52.5 (raw 52.8), set records on post-event recovery (51.1), violations (34.3%), and reversals (31.2%), and lifted 24×10 to 60.5; round 400 pushed raw 12×5 to 48.8 (raw non-level 53.2, +1.0 above PID), set hidden-pairing records (22.1 EMA / 22.7 raw), and set a 24×10 all-time high of 60.6 (+7.6 above PID); rounds 410–420 held 48.0 EMA (non-level 52.2–52.5, round-420 pre-event record 42.1, 24×10 59.7–59.8, 48×20 65.0–65.4).",
+   "text_zh": "第十阶段第 340–420 轮（13.17 小时、进度 82%，第 428 轮稳跑中，单轮 73–91 秒、零重试零坏样本）历史首次在 12×5 实时与不带液位平均上反超自整定PID，并连续四测稳锁 12×5 平均 48.0–48.3：第 340 轮 48×20 创 66.3 全历史新高（领先自整定PID 56.2 达 10.1 分）；第 390 轮 12×5 平均升至 48.3 新高（距 PID 48.6 仅差 0.3 分）、实时 48.7 首次在完整 12×5 上超过 PID，不带液位平均 52.5 首超 PID（实时 52.8），事件后恢复（51.1）、越限率（34.3%）与换向率（31.2%）齐创新纪录，24×10 升至 60.5；第 400 轮 12×5 实时再涨至 48.8（不带液位实时 53.2、领先 PID 1.0 分），盲控创平均 22.1 / 实时 22.7 双新高，24×10 创 60.6 全历史新高（领先 PID 7.6 分）；第 410–420 轮稳在平均 48.0（不带液位 52.2–52.5、第 420 轮事件前创 42.1 新高，24×10 59.7–59.8，48×20 65.0–65.4）。"
+  },
   {
    "date": "2026-11-28 23:23",
    "tone": "good",
@@ -571,13 +577,13 @@
  "runs": [],
  "sim_rl": {
   "state": "training",
-  "pill": "Stage 10 round 330 · 48×20 66.2 (+10.0 vs PID) · blind 22.2",
-  "pill_zh": "第十阶段第 330 轮 · 48×20 首破 66（+10.0）· 盲控 22.2",
-  "title": "Stage 10 rounds 320–330: 48×20 breaks 66 (+10.0 vs PID), 12×5 non-level hits 52.0 / 52.3 raw, blind hits 22.2",
-  "title_zh": "第十阶段第 320–330 轮：48×20 首破 66（+10.0 超 PID）、12×5 不带液位破 52（实时反超 PID）、盲控飙至 22.2",
-  "text": "10.63 h in (66% of 16 h schedule, round 335 live at 73–90 s/row, zero retries, zero bad samples): round 320 pushed 12×5 non-level past 52 (52.0 EMA / 52.3 raw, beating PID 52.2 on raw) and sent hidden-pairing surging to 22.2 EMA / 20.5 raw (5.7× Stage 8); round 330 broke 66 on 48×20 at 66.2 (+10.0 above PID 56.2; non-level 82.5, post-event 68.8, violations 10.5%) and hit 12×5 post-event record 50.6 (overall 47.6 EMA / 47.6 raw, blind 20.7 EMA / 20.3 raw, cost 238.8k; seven straight evals in 47.2–47.8 EMA).",
-  "text_zh": "已跑 10.63 小时（16 小时计划进度 66%，第 335 轮稳跑中，单轮 73–90 秒、零重试零坏样本）：第 320 轮 12×5 不带液位首破 52（平均 52.0 / 实时 52.3 反超自整定PID 52.2）、盲控暴涨至平均 22.2 / 实时 20.5（第八阶段 5.7 倍）；第 330 轮 48×20 历史首破 66 达 66.2（整整领先 PID 10.0 分；不带液位 82.5、事件后 68.8、越限率 10.5%），12×5 事件后创 50.6 新高（综合平均 47.6 / 实时 47.6、盲控 20.7 / 20.3、总代价 23.88 万；已连七测稳锁 47.2–47.8）。",
-  "expected_replay": "2026-11-29T02:20:00+08:00"
+  "pill": "Stage 10 round 420 · 12×5 raw 48.8 beats PID · EMA 48.3 · 24×10 60.6",
+  "pill_zh": "第十阶段第 420 轮 · 12×5 实时 48.8 超 PID · 平均 48.3 · 24×10 创 60.6",
+  "title": "Stage 10 rounds 390–420: raw 12×5 beats PID (48.8 vs 48.6), EMA reaches 48.3, 24×10 hits 60.6",
+  "title_zh": "第十阶段第 390–420 轮：12×5 实时 48.8 首超 PID，平均 48.3 新高，24×10 创 60.6",
+  "text": "13.17 h in (82% of 16 h schedule, round 428 live at 73–91 s/row, zero retries, zero bad samples): round 340 set a 48×20 all-time high of 66.3 (+10.1 vs PID); round 390 lifted 12×5 EMA to 48.3 (0.3 from PID 48.6) and raw to 48.7 (first time beating PID on full 12×5), non-level EMA to 52.5 (first time beating PID 52.2), post-event to 51.1, violations low 34.3%, and reversals 31.2%; round 400 pushed raw 12×5 to 48.8 (raw non-level 53.2), blind to 22.1 / 22.7 raw, and 24×10 to an all-time high of 60.6 (+7.6 vs PID); rounds 410–420 held 48.0 EMA (pre-event record 42.1).",
+  "text_zh": "已跑 13.17 小时（16 小时计划进度 82%，第 428 轮稳跑中，单轮 73–91 秒、零重试零坏样本）：第 340 轮 48×20 创 66.3 全历史新高（+10.1 超 PID）；第 390 轮 12×5 平均升至 48.3（距 PID 48.6 仅差 0.3 分）、实时 48.7 历史首超 PID，不带液位平均 52.5 首超 PID（52.2），事件后创 51.1 新高，越限率 34.3%、换向率 31.2% 齐创新低；第 400 轮 12×5 实时再涨至 48.8（不带液位实时 53.2），盲控创 22.1 / 实时 22.7 双新高，24×10 创 60.6 新高（+7.6 超 PID）；第 410–420 轮稳站平均 48.0（第 420 轮事件前创 42.1 新高）。",
+  "expected_replay": "2026-11-29T05:00:00+08:00"
  },
  "tables": [
   {
