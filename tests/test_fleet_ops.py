@@ -660,3 +660,9 @@ def test_guomao_quiet_hours_enforced_in_eval_worker_and_local_job(tmp_path):
     assert '--quiet-hours' not in flags_b
     assert lj.resolve_host('guomao')['default_quiet_hours'] == '00:00-10:30'
     assert lj.resolve_host('baolong')['default_quiet_hours'] is None
+    # Windows-proxied WSL2 launch uses Win32_Process.Create via -EncodedCommand to avoid vmIdleTimeout shutdown
+    import base64
+    wcmd = lj.build_win32_wsl_launch_cmd(lj.resolve_host('baolong'), '/root/aio-runs/sq-11')
+    assert wcmd[-1].startswith('powershell -NoProfile -EncodedCommand ')
+    decoded = base64.b64decode(wcmd[-1].split()[-1]).decode('utf-16le')
+    assert 'Win32_Process' in decoded and 'wsl.exe -d Ubuntu -u root -- /root/AIOGym2/.venv/bin/python /root/aio-runs/sq-11/runner.py /root/aio-runs/sq-11' in decoded

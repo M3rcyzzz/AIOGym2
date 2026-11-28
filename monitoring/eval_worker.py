@@ -295,14 +295,16 @@ def _ssh_exec(rcfg, bash_script, timeout=1800, stdin_bytes=None):
             cmd = ssh_cmd + ['bash', '-lc', bash_script]
             return subprocess.run(cmd, input=stdin_bytes, capture_output=True, timeout=timeout, check=True)
         cmd = ssh_cmd + ['bash', '-s']
-        return subprocess.run(cmd, input=bash_script, text=True, capture_output=True, timeout=timeout, check=True)
+        return subprocess.run(cmd, input=bash_script, text=True, encoding='utf-8', errors='replace',
+                              capture_output=True, timeout=timeout, check=True)
     user = rcfg.get('wsl_user') or 'root'
     wsl_prefix = f'wsl -d {rcfg["wsl_distro"]} -u {user} --'
     if stdin_bytes is not None:
         cmd = ssh_cmd + [f'{wsl_prefix} bash -lc {shlex.quote(bash_script)}']
         return subprocess.run(cmd, input=stdin_bytes, capture_output=True, timeout=timeout, check=True)
     cmd = ssh_cmd + [f'{wsl_prefix} bash -s']
-    return subprocess.run(cmd, input=bash_script, text=True, capture_output=True, timeout=timeout, check=True)
+    return subprocess.run(cmd, input=bash_script, text=True, encoding='utf-8', errors='replace',
+                          capture_output=True, timeout=timeout, check=True)
 
 
 def _stage_remote_snap(rcfg, local_snap):
@@ -315,13 +317,17 @@ def _stage_remote_snap(rcfg, local_snap):
             check=True, capture_output=True, text=True, timeout=600,
         )
         return remote_path
-    # Windows-proxied WSL2: stream atomically over SSH stdin into WSL ext4
+    # Windows-proxied WSL2: avoid cmd.exe quoting/&& metacharacters via mkdir -> dd -> mv
     tmp = f'{remote_path}.tmp'
-    script = (
-        f'mkdir -p {shlex.quote(remote_dir)} {shlex.quote(rcfg["val_cache"])} && '
-        f'cat > {shlex.quote(tmp)} && mv {shlex.quote(tmp)} {shlex.quote(remote_path)}'
-    )
-    _ssh_exec(rcfg, script, timeout=600, stdin_bytes=local_snap.read_bytes())
+    _ssh_exec(rcfg, f'mkdir -p {shlex.quote(remote_dir)} {shlex.quote(rcfg["val_cache"])}\n', timeout=60)
+    user = rcfg.get('wsl_user') or 'root'
+    ssh_cmd = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', rcfg['ssh'],
+               f'wsl -d {rcfg["wsl_distro"]} -u {user} -- dd of={tmp} bs=4M status=none']
+    with open(local_snap, 'rb') as f:
+        p = subprocess.run(ssh_cmd, stdin=f, capture_output=True, timeout=600)
+    if p.returncode != 0:
+        raise RuntimeError(f'remote stage failed for {remote_path}: {p.stderr.decode("utf-8", "replace")[-400:]}')
+    _ssh_exec(rcfg, f'mv -f {shlex.quote(tmp)} {shlex.quote(remote_path)}\n', timeout=60)
     return remote_path
 
 

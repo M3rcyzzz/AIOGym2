@@ -14,6 +14,7 @@ survives Mac sleep and WAN drops via `systemd --user` or `setsid nohup`, tracks 
   python -m monitoring.local_job setup-wsl guomao [--apply]
 """
 import argparse
+import base64
 import json
 import math
 import os
@@ -236,7 +237,8 @@ def build_ssh_cmd(host_cfg, remote_cmd=None, connect_timeout=10):
 def ssh_bash(host_cfg, script, timeout=60, check=True, connect_timeout=10):
     """Execute a bash script over SSH (piped via stdin so Windows ConPTY never mangles quoting)."""
     cmd = build_ssh_cmd(host_cfg, connect_timeout=connect_timeout)
-    return subprocess.run(cmd, input=script, text=True, capture_output=True, timeout=timeout, check=check)
+    return subprocess.run(cmd, input=script, text=True, encoding='utf-8', errors='replace',
+                          capture_output=True, timeout=timeout, check=check)
 
 
 def parse_nvidia_smi(line):
@@ -388,13 +390,15 @@ def _transfer_file_to_remote(local_file, host_cfg, remote_file, timeout=1800):
             check=True, capture_output=True, text=True, timeout=timeout,
         )
         return
+    # Windows-proxied WSL2: avoid cmd.exe quoting/&& metacharacters by mkdir -> dd -> mv
     tmp = f'{remote_file}.tmp'
-    cmd = build_ssh_cmd(
-        host_cfg,
-        remote_cmd=f'bash -lc {shlex.quote(f"mkdir -p {shlex.quote(remote_dir)} && cat > {shlex.quote(tmp)} && mv {shlex.quote(tmp)} {shlex.quote(remote_file)}")}',
-    )
+    ssh_bash(host_cfg, f'mkdir -p {shlex.quote(remote_dir)}\n', timeout=30)
+    cmd = build_ssh_cmd(host_cfg, remote_cmd=f'dd of={tmp} bs=4M status=none')
     with open(local_file, 'rb') as f:
-        subprocess.run(cmd, stdin=f, check=True, capture_output=True, timeout=timeout)
+        p = subprocess.run(cmd, stdin=f, capture_output=True, timeout=timeout)
+    if p.returncode != 0:
+        raise RuntimeError(f'remote write failed for {remote_file}: {p.stderr.decode("utf-8", "replace")[-400:]}')
+    ssh_bash(host_cfg, f'mv -f {shlex.quote(tmp)} {shlex.quote(remote_file)}\n', timeout=30)
 
 
 def _transfer_file_from_remote(host_cfg, remote_file, local_file, timeout=1800):
@@ -407,7 +411,7 @@ def _transfer_file_from_remote(host_cfg, remote_file, local_file, timeout=1800):
         )
         return
     tmp = local_file.parent / f'.{local_file.name}.tmp.{os.getpid()}'
-    cmd = build_ssh_cmd(host_cfg, remote_cmd=f'bash -lc {shlex.quote(f"cat {shlex.quote(remote_file)}")}')
+    cmd = build_ssh_cmd(host_cfg, remote_cmd=f'cat {remote_file}')
     with open(tmp, 'wb') as out:
         p = subprocess.run(cmd, stdout=out, stderr=subprocess.PIPE, timeout=timeout)
     if p.returncode != 0:
@@ -572,6 +576,27 @@ def handoff(src_spec, dst_spec, *, colab_root=None, total_updates=None, lr=None,
     return result
 
 
+def build_win32_wsl_launch_cmd(host_cfg, job_dir):
+    """Build a PowerShell -EncodedCommand invoking Win32_Process.Create for wsl.exe.
+
+    Keeping wsl.exe open as a detached Windows process prevents WSL2's 8-second
+    vmIdleTimeout from shutting down the Linux distro after SSH disconnects.
+    """
+    distro = host_cfg['wsl_distro']
+    user = host_cfg.get('wsl_user') or 'root'
+    py = host_cfg['python']
+    runner = f'{job_dir}/runner.py'
+    cmdline = f'wsl.exe -d {distro} -u {user} -- {py} {runner} {job_dir}'
+    ps = (
+        f"$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+        f"-Arguments @{{CommandLine='{cmdline}'}}; "
+        f"Write-Output ('WINPID ' + $r.ProcessId + ' RC ' + $r.ReturnValue)"
+    )
+    b64 = base64.b64encode(ps.encode('utf-16le')).decode('ascii')
+    return ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', host_cfg['ssh'],
+            f'powershell -NoProfile -EncodedCommand {b64}']
+
+
 def start_job(host_cfg, host_name, job_name, cmd, *, ref=None, put_files=(), use_systemd=False,
               extra_env=None, thermal_warn_c=THERMAL_WARN_C, quiet_hours=None):
     """Launch a detached 24x7 training job inside WSL2 with ext4 caches, quiet-hours guard, and GPU thermal heartbeat."""
@@ -605,6 +630,29 @@ def start_job(host_cfg, host_name, job_name, cmd, *, ref=None, put_files=(), use
 
     spec_json = json.dumps(spec, indent=1)
     unit = f'aio-{job_name}'.replace('/', '-')
+
+    stage_script = f'''set -euo pipefail
+cat > {shlex.quote(job_dir + "/job.json")} <<'JOBEOF'
+{spec_json}
+JOBEOF
+cat > {shlex.quote(job_dir + "/runner.py")} <<'RUNEOF'
+{REMOTE_RUNNER}
+RUNEOF
+rm -f {shlex.quote(job_dir + "/exit")} {shlex.quote(job_dir + "/pid")}
+'''
+
+    if not host_cfg['native'] and host_cfg.get('wsl_distro'):
+        # Windows-proxied WSL2: write files first, then spawn detached wsl.exe via Win32_Process.Create
+        # so Windows keeps the WSL2 VM alive for the full duration of runner.py.
+        ssh_bash(host_cfg, stage_script, timeout=60)
+        wp = subprocess.run(build_win32_wsl_launch_cmd(host_cfg, job_dir),
+                            text=True, encoding='utf-8', errors='replace',
+                            capture_output=True, timeout=60, check=True)
+        time.sleep(2.0)
+        p_pid = ssh_bash(host_cfg, f'cat {shlex.quote(job_dir + "/pid")} 2>/dev/null || echo pending\n', timeout=30)
+        out = f'STARTED {p_pid.stdout.strip()} ({wp.stdout.strip()})'
+        return dict(host=host_name, job=job_name, job_dir=job_dir, output=out)
+
     if use_systemd:
         launch_line = (
             f'if command -v systemd-run >/dev/null 2>&1 && systemctl --user is-system-running >/dev/null 2>&1; then '
@@ -619,18 +667,12 @@ def start_job(host_cfg, host_name, job_name, cmd, *, ref=None, put_files=(), use
             f'{shlex.quote(job_dir)} </dev/null >/dev/null 2>&1 &'
         )
 
-    launch_script = f'''set -euo pipefail
-cat > {shlex.quote(job_dir + "/job.json")} <<'JOBEOF'
-{spec_json}
-JOBEOF
-cat > {shlex.quote(job_dir + "/runner.py")} <<'RUNEOF'
-{REMOTE_RUNNER}
-RUNEOF
-rm -f {shlex.quote(job_dir + "/exit")} {shlex.quote(job_dir + "/pid")}
-{launch_line}
-sleep 1
-echo "STARTED $(cat {shlex.quote(job_dir + "/pid")} 2>/dev/null || echo pending)"
-'''
+    launch_script = (
+        stage_script
+        + f'{launch_line}\n'
+        + 'sleep 1\n'
+        + f'echo "STARTED $(cat {shlex.quote(job_dir + "/pid")} 2>/dev/null || echo pending)"\n'
+    )
     p = ssh_bash(host_cfg, launch_script, timeout=60)
     return dict(host=host_name, job=job_name, job_dir=job_dir, output=p.stdout.strip())
 
@@ -886,7 +928,7 @@ def main(argv=None):
             for j in res['jobs']:
                 hb = j.get('heartbeat') or {}
                 gpu = hb.get('gpu') or {}
-                last_m = (j.get('metrics_tail') or [{}])[-1]
+                last_m = next((r for r in reversed(j.get('metrics_tail') or []) if 'iter' in r), {})
                 warn = ' [THERMAL WARN]' if hb.get('thermal_warning') else ''
                 print(
                     f'{j["job"]}: running={j["running"]} pid={j["pid"]} iter={last_m.get("iter")} '

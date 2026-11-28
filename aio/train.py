@@ -2145,6 +2145,12 @@ _RESUME_RESTORE_KEYS = (
     'bias_lr_mult', 'knots', 'cosine_by', 'total_updates', 'total_samples',
     'focal_alpha', 'bc_iters', 'bc_floor', 'bc_hold', 'id_coef',
     'pre_cost', 'rev_smooth', 'smooth', 'floor', 'window_min', 'value', 'value_warm',
+    'lanes', 'window', 'sim_window', 'replay', 'batch', 'batch_min', 'keep',
+    'stay', 'after', 'after_by', 'cost_w', 'log_w', 'noise', 'faults', 'probe',
+    'known', 'critic_known', 'gamma', 'lam', 'tau', 'fail_cost',
+    'critic_lr', 'critic_iters', 'warm_steps', 'warmup', 'clip',
+    'mech', 'mech_groups', 'mech_batches', 'menu', 'menu_mix', 'nseg',
+    'builders', 'builder_threads', 'val_raw',
 )
 
 
@@ -3563,6 +3569,7 @@ def main():
     grown = False
     if resumed:                                                   # a run goes on with the network it has
         restore_resume_config(a, ck, explicit)
+        windows = (a.window, a.sim_window or a.window)
         a.no_stats = not N.has_stats(ck['model']['pairs'])
         if not a.seq:
             a.reader = N.reader_of(ck['model']['pairs'])
