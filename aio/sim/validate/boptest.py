@@ -342,18 +342,25 @@ class FormulaPI:
 
 
 class Network:
-    """The network on the public packet (aio.net.Controller; `weights`: a released folder of
-    release/huggingface, or a run's .pt file): every CV tracked to the setpoint of the test case's own loop,
-    its band as the scale, the instrument range as the packet range, the pairing on the diagonal with the
-    sign of the step test."""
+    """A packet controller on BOPTEST (`ctl`: an object with `.step(packet) -> moves`, a callable factory, or a
+    `MODULE:FACTORY` plugin spec built with `arg` via `aio.sim.plugin.build`): every CV tracked to the setpoint of
+    the test case's own loop, its band as the scale, the instrument range as the packet range, the pairing on the
+    diagonal with the sign of the step test."""
 
-    def __init__(self, loop, weights, sign):
-        import sys
+    def __init__(self, loop, ctl, sign, arg=None):
         import numpy as np
-        from pathlib import Path
-        from aio import net as N
-        self.encode = sys.modules[N.shape_of.__module__].encode
-        self.ctl = N.Controller(N.released(weights) if Path(weights).is_dir() else N.load(weights)[0])
+        from aio import interface as IF
+        self.encode = IF.encode
+        if isinstance(ctl, str):
+            from aio.sim import plugin as PG
+            self.ctl = PG.build(ctl, arg)[0]
+        elif hasattr(ctl, 'step') and callable(ctl.step):
+            self.ctl = ctl
+        elif callable(ctl):
+            out = ctl() if arg is None else ctl(arg)
+            self.ctl = out[0] if isinstance(out, tuple) else out
+        else:
+            raise TypeError(f'expected a .step(packet) controller, factory, or MODULE:FACTORY spec, got {ctl!r}')
         cv = loop['cv']
         self.k = dict(scale=np.array([c['band'] for c in cv]), lower=np.array([c['lo'] for c in cv]), upper=np.array([c['hi'] for c in cv]),
                       tracking=np.ones(len(cv)), pairing=list(range(len(loop['mv']))), dt=loop.get('packet_dt', loop['dt']), sign=np.sign(sign))
@@ -365,7 +372,7 @@ class Network:
         self.last = (y, sp, u)
         slew = SLEW*(hi-lo)
         packet = self.encode(values=y, previous=py, target=sp, last_target=psp, command=u, last_command=pu, u_low=lo, u_high=hi, slew=slew, **self.k)
-        return np.clip(u+self.ctl.step(packet)[:len(u)]*slew, lo, hi)
+        return np.clip(u+np.asarray(self.ctl.step(packet), dtype=float)[:len(u)]*slew, lo, hi)
 
 
 def thin(Y, SP, U, n=336):
@@ -440,11 +447,11 @@ def own(client, case, period, loop=None):
                 trace=thin(Y, SP, U))
 
 
-def exams(urls, weights, tests, cases=None, which=('peak_heat_day', 'typical_heat_day')):
+def exams(urls, ctl, tests, cases=None, which=('peak_heat_day', 'typical_heat_day'), arg=None):
     """Every loop over its standard heating periods under: the test case's own controller, the formula PI
-    tuned from the step test, the network, and the network with half the band (1 % of the range, the
-    narrowest the prior draws: how much the result depends on that commissioning number). `tests`: the
-    result of `steps`."""
+    tuned from the step test, the packet controller (`ctl`, with optional `arg`: see `Network`), and the same
+    controller with half the band (1 % of the range, the narrowest the prior draws: how much the result depends
+    on that commissioning number). `tests`: the result of `steps`."""
     import copy
     import numpy as np
     cases = cases or [c for c in LOOPS if c in tests]
@@ -463,7 +470,7 @@ def exams(urls, weights, tests, cases=None, which=('peak_heat_day', 'typical_hea
         elif kind == 'formula_pi':
             r = exam(client, case, period, lambda L: FormulaPI(L, tests[case]['pi']))
         else:
-            r = exam(client, case, period, lambda L: Network(L, weights, sign), loop=loop)
+            r = exam(client, case, period, lambda L: Network(L, ctl, sign, arg=arg), loop=loop)
         r['controller'] = kind
         return r
 

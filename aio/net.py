@@ -901,8 +901,7 @@ class AIO(nn.Module):
         return base_size(ncv, nmv)+self.pairs.size_of(ncv, nmv)
 
     def legacy(self):
-        """The interface of the earlier actor (history, distribution), for code that drives one
-        (aio.sim.control.Policy)."""
+        """The interface of the earlier actor (history, distribution), for code that drives one."""
         return _Legacy(self)
 
 

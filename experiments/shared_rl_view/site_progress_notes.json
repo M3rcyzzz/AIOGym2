@@ -1,26 +1,32 @@
 {
- "as_of": "2026-11-28T21:55:00+08:00",
+ "as_of": "2026-11-28T22:53:00+08:00",
  "status": {
-  "pill": "Stage 10 round 280 · 12×5 hits 47.8 EMA / 48.0 raw · 0.8 from PID",
-  "pill_zh": "第十阶段第 280 轮 · 12×5 创 47.8 平均 / 48.0 实时 · 距自整定PID 仅 0.8 分"
+  "pill": "Stage 10 round 310 · 24×10 breaks 60 (60.2) · 48×20 hits 65.9 · blind 20.4",
+  "pill_zh": "第十阶段第 310 轮 · 24×10 首破 60（60.2）· 48×20 创 65.9 · 盲控 20.4"
  },
  "insights": {
-  "finding_title": "Stage 10 rounds 270–280 surged to all-time highs across every 12×5 metric: 47.8 moving-average / 48.0 raw (first time ever past 48, just 0.8 behind self-tuning PID 48.6), levels 41.6 EMA / 41.9 raw, non-level 51.5 EMA / 51.7 raw, and record-low episode costs on both 12×5 (236.3k) and 24×10 (149.5k).",
-  "finding": "Running smoothly on the fresh 96 GB Blackwell GPU (9.10 / 16.0 h, 57% elapsed, compiled engine at 72–92 s/row, 95% GPU utilization, zero allocation retries, zero bad samples), Stage 10 broke through its plateau in rounds 270–280: round 270 lifted 12×5 to 47.5 EMA / 47.8 raw with integrating levels surging to 41.6 EMA / 41.9 raw (within 0.1 of self-tuning PID 42.0), constraint violations down to an all-time low of 35.1%, and valve reversals down to 33.0%; round 280 climbed again to 47.8 EMA / 48.0 raw (first time past 48 in project history), pushed non-level to 51.5 EMA / 51.7 raw (within 0.5 of PID 52.2), dropped 12×5 episode cost to an all-time low of 236.3k, held 24×10 at 59.3 with its first-ever episode cost below 150k (149.5k, levels 60.7, violations 12.7%), and kept 48×20 at 64.9 (non-level 81.3, 50.0% win vs. PID). Weight inspection confirmed the precision-gate and in-flight pipe weights have grown +146% and +110% since round 80 and continue climbing.",
-  "bottleneck_title": "With 6.9 hours (~240+ rounds) still remaining in the cosine decay on the fresh 96 GB GPU, Stage 10 sits only 0.8 points below self-tuning PID (48.6) on 12×5 moving-average and 0.6 points away on raw weights (48.0).",
-  "bottleneck": "Integrating-level loops have nearly caught self-tuning PID (41.6–41.9 vs. 42.0), and non-level loops are within half a point (51.5–51.7 vs. 52.2). Remaining excess cost is concentrated in the hardest 45+-step high-purity separation loops as the learning rate tapers smoothly from 2.7e-5 downward.",
-  "next_title": "Track Stage 10 rounds 290–500 to push 12×5 decisively past self-tuning PID (48.6) toward 50+, 24×10 past 60, and 48×20 past 66.",
-  "next": "As soon as 12×5 moving-average clears self-tuning PID (48.6), immediately run a full 8-family zero-shot mechanistic industrial exam, refresh all four dynamic replays, and publish updated public open weights to GitHub, Hugging Face, and ModelScope."
+  "finding_title": "Stage 10 round 300 smashed three major records in one sweep — 24×10 broke 60 for the first time at 60.2 (+7.2 above self-tuning PID), 48×20 hit an all-time high of 65.9 (+9.7 above PID), and 12×5 hidden-pairing hit 20.4 EMA — while 12×5 stayed locked in 47.2–47.8 across five straight evaluations.",
+  "finding": "Past 10.1 hours (63% of 16 h schedule, round 317 live on the fresh 96 GB Blackwell GPU at 95% utilization, 76–91 s/row, zero allocation retries, zero bad samples), Stage 10 extended its streak to five consecutive 12×5 moving-average evaluations above 47.2 (47.5 → 47.8 [raw 48.0] → 47.2 → 47.4 → 47.2). Round 300 delivered headline breakthroughs across every larger scale and blind control: 24×10 broke 60 for the first time in project history at 60.2 (+7.2 above self-tuning PID 53.0; non-level record 59.6, levels 61.1, violations tied at record-low 12.5%, 50.0% win vs. PID; round 290 also hit 60.0 with post-event record 61.8), 48×20 reached a new all-time high of 65.9 (+9.7 above PID 56.2; non-level record 81.9, post-event 68.2, violations 10.6%, 50.0% win), and 12×5 set new records on hidden-pairing EMA (20.4, 5.2× Stage 8; round 290 raw 20.4) and valve reversal rate (31.6% low). Round 310 held 47.2 EMA / 47.4 raw (levels 40.2 / 40.3, blind 19.5 / 19.7), 59.2 on 24×10, and 65.2 on 48×20.",
+  "bottleneck_title": "With ~5.9 hours (~200+ rounds) left in the cosine cooldown (learning rate now 2.2e-5), 24×10 (+7.2) and 48×20 (+9.7) already dominate self-tuning PID while 12×5 sits just 0.8 points below PID (47.8 EMA / 48.0 raw vs. 48.6).",
+  "bottleneck": "Five straight 12×5 evaluations have stabilized cleanly in 47.2–47.8 EMA with steadily falling valve reversals (31.6%–31.9%); remaining 12×5 loss continues to concentrate in the hardest 45+-step high-purity separation loops as the learning rate tapers downward.",
+  "next_title": "Ride Stage 10 final ~200 rounds toward 12×5 past self-tuning PID (48.6), while preparing the upgraded local+cloud pipeline for Stage 11.",
+  "next": "As soon as 12×5 moving-average clears self-tuning PID (48.6) or Stage 10 completes, run a fresh full 8-family zero-shot mechanistic industrial exam, refresh all four dynamic replays, and publish updated open weights across GitHub, Hugging Face, and ModelScope."
  },
  "insights_zh": {
-  "finding_title": "第十阶段第 270–280 轮连破全历史纪录：12×5 飙至平均 47.8 / 实时首破 48 达 48.0（距自整定PID 48.6 仅差 0.8 分）、带液位 41.6 平均 / 41.9 实时、不带液位 51.5 平均 / 51.7 实时，12×5（23.63 万）与 24×10（14.95 万）单回合总代价齐创新低。",
-  "finding": "在新 96 GB Blackwell GPU 上稳步推进至第 281 轮（已跑 9.10 / 16.0 小时、进度 57%，编译引擎单轮 72–92 秒、GPU 利用率 95%、零重试零坏样本），第十阶段于第 270–280 轮打破平台期连创全线新高：第 270 轮 12×5 跃至平均 47.5 / 实时 47.8，带液位飙至平均 41.6 / 实时 41.9（距自整定PID 42.0 仅差 0.1 分），越限率创 35.1% 全历史新低、换向率降至 33.0%；第 280 轮再涨至平均 47.8 / 实时 48.0（项目历史首次突破 48），不带液位创平均 51.5 / 实时 51.7 新高（距 PID 52.2 仅差 0.5 分），12×5 总代价压至 23.63 万新低，24×10 稳在 59.3 且总代价历史首次跌破 15 万（14.95 万、带液位 60.7、越限率 12.7%），48×20 稳在 64.9（不带液位 81.3、对 PID 胜率 50.0%）。权重剖析证实精调门控与在途管道权重较第 80 轮分别已增长 146% 与 110%，仍在健康攀升。",
-  "bottleneck_title": "第十阶段在新 GPU 上仍余约 6.9 小时（约 240+ 轮）余弦退火，12×5 平均权重距自整定PID（48.6）仅差 0.8 分、实时权重（48.0）仅差 0.6 分。",
-  "bottleneck": "带液位回路（41.6–41.9）已几乎追平自整定PID（42.0），不带液位回路（51.5–51.7）也仅差约半分；剩余失分主要集中在 45 步以上高纯度分离慢对象，随着学习率由 2.7e-5 平滑衰减，有望进一步收口。",
-  "next_title": "跟踪第十阶段第 290–500 轮，推动 12×5 正式反超自整定PID（48.6）并冲击 50+、24×10 破 60、48×20 破 66。",
-  "next": "一旦 12×5 平均权重实破自整定PID（48.6），立即重跑八类工业机理零样本全考、刷新全部 4 组动态回放，并同步更新 GitHub / Hugging Face / ModelScope 开源权重。"
+  "finding_title": "第十阶段第 300 轮连破三项全历史大关：24×10 历史首次实破 60 达 60.2（领先自整定PID 7.2 分）、48×20 创 65.9 新高（领先 PID 9.7 分）、12×5 盲控平均创 20.4 新高，12×5 连续五测稳锁 47.2–47.8。",
+  "finding": "第十阶段在新 96 GB Blackwell GPU 上已稳跑 10.1 小时（进度 63%，已推进至第 317 轮，GPU 利用率 95%、单轮 76–91 秒、零重试零坏样本），12×5 平均权重已连续五次验证稳站 47.2 以上（47.5 → 47.8 [实时 48.0] → 47.2 → 47.4 → 47.2）。第 300 轮在大尺寸与盲控上全面爆发：24×10 历史首次实破 60 达 60.2（领先自整定PID 53.0 达 7.2 分；不带液位创 59.6 新高、带液位 61.1、越限率追平 12.5% 新低、胜率 50.0%；第 290 轮已先触 60.0 且事件后创 61.8 新高），48×20 创 65.9 全历史新高（领先 PID 56.2 达 9.7 分；不带液位创 81.9 新高、事件后 68.2、越限率 10.6%、胜率 50.0%），12×5 同步创盲控平均 20.4 新高（第八阶段 5.2 倍；第 290 轮实时已达 20.4）与阀门换向率 31.6% 新低。第 310 轮稳在 12×5 平均 47.2 / 实时 47.4（带液位 40.2 / 40.3、盲控 19.5 / 19.7）、24×10 59.2、48×20 65.2。",
+  "bottleneck_title": "余弦退火尚余约 5.9 小时（约 200+ 轮，学习率已降至 2.2e-5），24×10（+7.2）与 48×20（+9.7）已大幅领先自整定PID，12×5 距 PID（48.6）仅差 0.8 分。",
+  "bottleneck": "12×5 连续五测已稳锁 47.2–47.8 区间且阀门换向率持续压低至 31.6%–31.9%，剩余失分仍集中在 45 步以上高纯度分离慢对象，将在末段退火期继续收口。",
+  "next_title": "跟踪第十阶段末段约 200 轮冲刺 12×5 反超自整定PID（48.6），同时为第十一阶段落地多机混合提速流水线。",
+  "next": "一旦 12×5 平均权重实破自整定PID（48.6）或第十阶段收官，立即重跑八类工业机理零样本全考、刷新全部 4 组动态回放并同步更新 GitHub / Hugging Face / ModelScope 开源权重。"
  },
  "timeline": [
+  {
+   "date": "2026-11-28 22:53",
+   "tone": "good",
+   "text": "Stage 10 rounds 290–310 (10.12 h, 63% elapsed, round 317 live at 95% GPU util, 76–91 s/row, zero retries, zero bad samples) shattered multi-scale and blind-control records: round 300 broke 60 on 24×10 for the first time at 60.2 (+7.2 above self-tuning PID 53.0; non-level 59.6, violations low 12.5%, 50.0% win; round 290 hit 60.0 with post-event record 61.8), pushed 48×20 to a record 65.9 (+9.7 above PID 56.2; non-level 81.9, post-event 68.2, violations 10.6%), and set 12×5 hidden-pairing EMA record 20.4 (5.2× Stage 8; round 290 raw 20.4) and valve-reversal low 31.6%, locking five consecutive 12×5 evaluations in 47.2–47.8 EMA (round 310: 47.2 EMA / 47.4 raw, 24×10 59.2, 48×20 65.2).",
+   "text_zh": "第十阶段第 290–310 轮（10.12 小时、进度 63%，已推进至第 317 轮，GPU 利用率 95%、单轮 76–91 秒、零重试零坏样本）全面刷新大尺寸与盲控纪录：第 300 轮 24×10 历史首次实破 60 达 60.2（领先自整定PID 53.0 达 7.2 分；不带液位 59.6、越限率 12.5% 新低、胜率 50.0%；第 290 轮先触 60.0、事件后创 61.8 新高），48×20 创 65.9 全历史新高（领先 PID 56.2 达 9.7 分；不带液位 81.9、事件后 68.2、越限率 10.6%），12×5 创盲控平均 20.4 新高（第八阶段 5.2 倍；第 290 轮实时 20.4）与换向率 31.6% 新低，连续五测稳锁 12×5 平均 47.2–47.8（第 310 轮平均 47.2 / 实时 47.4，24×10 59.2，48×20 65.2）。"
+  },
   {
    "date": "2026-11-28 21:55",
    "tone": "good",
@@ -559,21 +565,21 @@
  "runs": [],
  "sim_rl": {
   "state": "training",
-  "pill": "Stage 10 round 280 · 12×5 47.8 EMA / 48.0 raw · 0.8 from PID",
-  "pill_zh": "第十阶段第 280 轮 · 12×5 47.8 平均 / 48.0 实时 · 距 PID 0.8 分",
-  "title": "Stage 10 rounds 270–280 smash 12×5 records: 47.8 EMA / 48.0 raw, levels 41.6–41.9, cost lows on 12×5 & 24×10",
-  "title_zh": "第十阶段第 270–280 轮连破 12×5 纪录：平均 47.8 / 实时首破 48（48.0）、带液位 41.6–41.9、双尺寸代价新低",
-  "text": "9.10 h in on the fresh 96 GB Blackwell GPU (57% of 16 h schedule, round 281 live, 95% GPU util, 72–92 s/row, zero retries, zero bad samples): round 270 hit 47.5 EMA / 47.8 raw with levels surging to 41.6 EMA / 41.9 raw (0.1 from PID 42.0) and violations at a record-low 35.1%; round 280 climbed again to 47.8 EMA / 48.0 raw (first time ever past 48, 0.8 from PID 48.6), non-level 51.5 EMA / 51.7 raw, 12×5 cost low 236.3k, 24×10 59.3 with first cost under 150k (149.5k, levels 60.7, violations 12.7%), and 48×20 64.9 (non-level 81.3, 50.0% win).",
-  "text_zh": "在新 96 GB Blackwell GPU 上已跑 9.10 小时（16 小时计划进度 57%，已推进至第 281 轮、GPU 利用率 95%、单轮 72–92 秒、零重试零坏样本）：第 270 轮 12×5 达平均 47.5 / 实时 47.8，带液位飙至平均 41.6 / 实时 41.9（距 PID 42.0 仅差 0.1 分），越限率创 35.1% 新低；第 280 轮再创平均 47.8 / 实时 48.0（历史首次破 48，距自整定PID 48.6 仅差 0.8 分）、不带液位平均 51.5 / 实时 51.7、12×5 总代价 23.63 万新低，24×10 稳在 59.3 且总代价首次跌破 15 万（14.95 万、带液位 60.7、越限率 12.7%），48×20 达 64.9（不带液位 81.3、胜率 50.0%）。",
-  "expected_replay": "2026-11-29T00:50:00+08:00"
+  "pill": "Stage 10 round 310 · 24×10 60.2 · 48×20 65.9 · blind 20.4",
+  "pill_zh": "第十阶段第 310 轮 · 24×10 首破 60 · 48×20 65.9 · 盲控 20.4",
+  "title": "Stage 10 round 300 breaks 60 on 24×10 (60.2), sets 48×20 (65.9) & blind (20.4) highs; 5 straight 12×5 evals in 47.2–47.8",
+  "title_zh": "第十阶段第 300 轮 24×10 首破 60（60.2）、48×20 创 65.9、盲控创 20.4；12×5 连五测稳站 47.2–47.8",
+  "text": "10.12 h in (63% of 16 h schedule, round 317 live at 95% GPU util, 76–91 s/row, zero retries, zero bad samples): round 300 broke 60 on 24×10 for the first time at 60.2 (+7.2 above PID; non-level 59.6, violations low 12.5%, 50.0% win; round 290 hit 60.0 with post-event 61.8), pushed 48×20 to a record 65.9 (+9.7 above PID; non-level 81.9, post-event 68.2, violations 10.6%), set 12×5 hidden-pairing EMA record 20.4 (5.2× Stage 8) and reversal low 31.6%, while holding five straight 12×5 evaluations in 47.2–47.8 (round 310: 47.2 EMA / 47.4 raw, 24×10 59.2, 48×20 65.2).",
+  "text_zh": "已跑 10.12 小时（16 小时计划进度 63%，已推进至第 317 轮，GPU 利用率 95%、单轮 76–91 秒、零重试零坏样本）：第 300 轮 24×10 历史首次实破 60 达 60.2（领先自整定PID 7.2 分；不带液位 59.6、越限率 12.5% 新低、胜率 50.0%；第 290 轮达 60.0、事件后 61.8），48×20 创 65.9 全历史新高（领先 PID 9.7 分；不带液位 81.9、事件后 68.2、越限率 10.6%），12×5 创盲控平均 20.4 新高（第八阶段 5.2 倍）与换向率 31.6% 新低，且连续五测稳锁 47.2–47.8（第 310 轮平均 47.2 / 实时 47.4，24×10 59.2，48×20 65.2）。",
+  "expected_replay": "2026-11-29T01:50:00+08:00"
  },
  "tables": [
   {
    "chart": true,
    "title": "Latest validation best (Stage 10, round 280) beside reference controllers",
    "title_zh": "最新验证最佳成绩（第十阶段第 280 轮）与工程参照对比",
-   "note": "Evaluated on the same 256 unseen 12×5 plants when loop pairings are published (Stage 10 round 280 best 47.8 EMA / 48.0 raw — first time past 48 and just 0.8 behind self-tuning PID 48.6; with levels 41.0 [round 270 hit 41.6 EMA / 41.9 raw], without levels 51.5 [raw 51.7], violations low 35.1% at round 270, episode cost low 236.3k, hidden-pairing up to 20.0 at round 220). On larger unseen batches, Stage 10 reached 59.3 on 24×10 (cost low 149.5k at round 280, levels 61.4) and 65.8 on 48×20 (round 240, +9.6 above PID; violations low 10.4%; self-tuning PID scores 53.0 and 56.2).",
-   "note_zh": "各控制器均在同一批 256 台未见 12×5 装置、告知常规配对条件下考核（第十阶段第 280 轮最佳合计平均 47.8 / 实时首破 48 达 48.0，距自整定PID 48.6 仅差 0.8 分；带液位 41.0 [第 270 轮创平均 41.6 / 实时 41.9 新高]、不带液位 51.5 [实时 51.7]、第 270 轮越限率低至 35.1%、总代价 23.63 万新低、第 220 轮盲控首破 20 达 20.0）。大尺寸未见批上，第十阶段 24×10 达 59.3（第 280 轮总代价创 14.95 万新低、带液位 61.4），48×20 达 65.8（第 240 轮，领先 PID 9.6 分；越限率低至 10.4%；自整定PID 为 53.0 与 56.2）。",
+   "note": "Evaluated on the same 256 unseen 12×5 plants when loop pairings are published (Stage 10 round 280 best 47.8 EMA / 48.0 raw — first time past 48 and just 0.8 behind self-tuning PID 48.6; with levels 41.0 [round 270 hit 41.6 EMA / 41.9 raw], without levels 51.5 [raw 51.7], violations low 35.1% at round 270, reversals low 31.6% and hidden-pairing high 20.4 at round 300, episode cost low 236.3k). On larger unseen batches, Stage 10 broke 60 on 24×10 at 60.2 (round 300, +7.2 above PID; violations low 12.5%, cost low 149.5k) and reached 65.9 on 48×20 (round 300, +9.7 above PID; non-level 81.9, violations low 10.4%; self-tuning PID scores 53.0 and 56.2).",
+   "note_zh": "各控制器均在同一批 256 台未见 12×5 装置、告知常规配对条件下考核（第十阶段第 280 轮最佳合计平均 47.8 / 实时首破 48 达 48.0，距自整定PID 48.6 仅差 0.8 分；带液位 41.0 [第 270 轮创平均 41.6 / 实时 41.9 新高]、不带液位 51.5 [实时 51.7]、第 270 轮越限率低至 35.1%、第 300 轮换向率低至 31.6% 且盲控创 20.4 新高、总代价 23.63 万新低）。大尺寸未见批上，第十阶段第 300 轮 24×10 历史首破 60 达 60.2（领先 PID 7.2 分；越限率低至 12.5%、总代价低至 14.95 万），48×20 达 65.9（领先 PID 9.7 分；不带液位 81.9、越限率低至 10.4%；自整定PID 为 53.0 与 56.2）。",
    "cols": [
     [
      "All",
@@ -826,8 +832,8 @@
  "curve": {
   "title": "Validation score across cumulative training rounds (pure true-cost training, Stages 1–10)",
   "title_zh": "验证分随累计训练轮数的变化（纯真实代价端到端训练全程）",
-  "note": "All rounds are evaluated on the exact same 256-plant unseen 12×5 validation batch; rounds 1,314–1,534 are Stage 9 and rounds 1,544–1,814 are Stage 10 rounds 10–280 (climbing to 47.8 EMA / 48.0 raw overall, levels 41.6 EMA / 41.9 raw, non-level 51.5 EMA / 51.7 raw, hidden-pairing up to 20.0, 24×10 up to 59.3, and 48×20 up to 65.8). 24×10 and 48×20 use their own fixed unseen batches.",
-  "note_zh": "全部轮次均在同一批 256 台未见 12×5 装置上验证；第 1,314–1,534 轮为第九阶段，第 1,544–1,814 轮为第十阶段第 10–280 轮（已升至综合平均 47.8 / 实时 48.0、带液位 41.6 平均 / 41.9 实时、不带液位 51.5 平均 / 51.7 实时、盲控最高 20.0、24×10 最高 59.3、48×20 最高 65.8）。24×10 与 48×20 使用各自的固定未见验证批。",
+  "note": "All rounds are evaluated on the exact same 256-plant unseen 12×5 validation batch; rounds 1,314–1,534 are Stage 9 and rounds 1,544–1,844 are Stage 10 rounds 10–310 (climbing to 47.8 EMA / 48.0 raw overall, levels 41.6 EMA / 41.9 raw, non-level 51.5 EMA / 51.7 raw, hidden-pairing up to 20.4, 24×10 breaking 60 at 60.2, and 48×20 reaching 65.9). 24×10 and 48×20 use their own fixed unseen batches.",
+  "note_zh": "全部轮次均在同一批 256 台未见 12×5 装置上验证；第 1,314–1,534 轮为第九阶段，第 1,544–1,844 轮为第十阶段第 10–310 轮（已升至综合平均 47.8 / 实时 48.0、带液位 41.6 平均 / 41.9 实时、不带液位 51.5 平均 / 51.7 实时、盲控最高 20.4、24×10 首破 60 达 60.2、48×20 达 65.9）。24×10 与 48×20 使用各自的固定未见验证批。",
   "series": [
    {
     "key": "all",
@@ -3218,6 +3224,33 @@
     59.3,
     64.9,
     19.0
+   ],
+   [
+    1824,
+    47.2,
+    51.3,
+    39.7,
+    60.0,
+    65.4,
+    20.0
+   ],
+   [
+    1834,
+    47.4,
+    51.2,
+    40.6,
+    60.2,
+    65.9,
+    20.4
+   ],
+   [
+    1844,
+    47.2,
+    51.1,
+    40.2,
+    59.2,
+    65.2,
+    19.5
    ]
   ],
   "refs": [

@@ -5,7 +5,7 @@
   python -m aio.sim.validate.run stress [plants]     # the guarded step with any valve position at states the episodes reached
   python -m aio.sim.validate.run colamod DIR         # column A against the original MATLAB code in DIR (Octave)
   python -m aio.sim.validate.run realdata DIR        # records of real plants in DIR (the folders fetch.py writes)
-  python -m aio.sim.validate.run boptest URLS SRC [WEIGHTS]   # BOPTEST servers (comma separated), its source tree, the network (a released folder or a run's .pt)
+  python -m aio.sim.validate.run boptest URLS SRC [--ctl MODULE:FACTORY --arg WEIGHTS]   # BOPTEST servers (comma separated), its source tree, optional packet controller
   python -m aio.sim.validate.run prior               # the stored real loops (BOPTEST step tests, DaISy records) against the prior as it is now
   python -m aio.sim.validate.run table               # docs/validation.md from reports/validation/*.json
 
@@ -132,9 +132,9 @@ def dump(o, ind=0):
     return json.dumps(o, allow_nan=False)
 
 
-def boptest(urls, src, weights=None, big=False):
+def boptest(urls, src, ctl=None, arg=None, big=False):
     """Against running BOPTEST servers: the project's reference KPIs, every test case under its own
-    controller, step tests of the loops in boptest.LOOPS against the prior, and (with weights) the exam.
+    controller, step tests of the loops in boptest.LOOPS against the prior, and (with ctl) the exam.
     big: the 15-zone office too (its five periods take 43 minutes on three servers)."""
     import torch
     from aio.sim.validate import boptest as B
@@ -144,7 +144,7 @@ def boptest(urls, src, weights=None, big=False):
     res = dict(version=B.Client(urls[0]).call('GET', 'version')['payload']['version'].strip())
     save = lambda: (OUT.mkdir(parents=True, exist_ok=True), (OUT/'boptest.json').write_text(dump(res)))      # noqa: E731
     for key, fn in (('reference', lambda: B.reference(urls, src)), ('steps', lambda: B.steps(urls, src)),
-                    ('exam', lambda: B.exams(urls, weights, res['steps']) if weights else None), ('baseline', lambda: B.baseline(urls, src, cases))):
+                    ('exam', lambda: B.exams(urls, ctl, res['steps'], arg=arg) if ctl else None), ('baseline', lambda: B.baseline(urls, src, cases))):
         res[key] = fn()
         save()
         print(key, 'done', flush=True)
@@ -311,6 +311,8 @@ if __name__ == '__main__':
     ap.add_argument('--n', type=int, default=16)
     ap.add_argument('--jobs', type=int, default=2)
     ap.add_argument('--big', action='store_true')
+    ap.add_argument('--ctl', default='', help='MODULE:FACTORY of a packet controller (aio.sim.plugin)')
+    ap.add_argument('--arg', default=None, help='argument passed to FACTORY (e.g. weights path)')
     a = ap.parse_args()
     if a.cmd == 'static':
         static()
@@ -323,7 +325,9 @@ if __name__ == '__main__':
     elif a.cmd == 'realdata':
         realdata(a.args[0])
     elif a.cmd == 'boptest':
-        boptest(*a.args[:3], big=a.big)
+        if len(a.args) > 2 and not a.ctl:
+            ap.error('boptest weights must now be passed via --ctl MODULE:FACTORY --arg PATH')
+        boptest(*a.args[:2], ctl=a.ctl or None, arg=a.arg, big=a.big)
     elif a.cmd == 'prior':
         prior()
     else:

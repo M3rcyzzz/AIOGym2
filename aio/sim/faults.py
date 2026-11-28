@@ -1,6 +1,6 @@
 """Faults and a start-up: the exams of what a unit does when something stays wrong (`exam`), and the same faults in training (`train_draw`, aio.train --faults).
 
-  python -m aio.sim.faults --plants usual,tep,column --kinds bad,freeze,drift,stick,startup --out faults.json [--ckpt RUN/SEED/last.pt]
+  python -m aio.sim.faults --plants usual,tep,column --kinds bad,freeze,drift,stick,startup --out faults.json [--ctl MODULE:FACTORY --arg WEIGHTS]
 
 Every episode of a batch gets one fault of the kind, on one row or valve and for a stretch the generator's own
 events never last (FAULT_LEN decisions; its bad-quality readings last 5 to 31):
@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from aio.sim import core as C, control as CT, mech as ME, plants as PL, prior as PR, stay as ST
+from aio.sim import core as C, control as CT, mech as ME, plants as PL, plugin as PG, prior as PR, stay as ST
 
 KINDS = ('bad', 'freeze', 'drift', 'stick', 'startup')
 FAULT_LEN = (40, 200)            # decisions a fault lasts (uniform)
@@ -198,24 +198,42 @@ def exam(plant, kind, ctls, n, seed=SEED):
     return dict(key=key, n=n, seed=seed, points=pts, per=per, trips=trips, **extra)
 
 
-def main():
+def _parser():
     ap = argparse.ArgumentParser()
     ap.add_argument('--plants', default='usual')
     ap.add_argument('--kinds', default=','.join(KINDS))
-    ap.add_argument('--ckpt', type=Path)
+    ap.add_argument('--ctl', default='', help='MODULE:FACTORY of an external controller or {name: controller} dict (aio.sim.plugin)')
+    ap.add_argument('--arg', default=None, help='argument passed to FACTORY (e.g. a weights path)')
+    ap.add_argument('--name', default=None, help='controller name when FACTORY returns one controller (defaults to meta["name"] or "aio")')
+    ap.add_argument('--ckpt', default=None, help=argparse.SUPPRESS)
     ap.add_argument('--n', type=int, default=8)
     ap.add_argument('--n-usual', type=int, default=64)
     ap.add_argument('--seed', type=int, default=SEED)
     ap.add_argument('--out', type=Path, required=True)
-    a = ap.parse_args()
+    return ap
 
-    def ctls():
-        c = dict(hold=CT.Hold(), pi=CT.PI(), dmc=CT.Teacher('fixed', meter=True), teacher=CT.Teacher('late'))
-        if a.ckpt:
-            from aio import net as N
-            net, _ = N.load(a.ckpt, 'cpu')
-            c['aio'] = N.Policy(net)
-        return c
+
+def _load_ctl(ap, a, dev='cpu'):
+    if a.ckpt and not a.ctl:
+        ap.error('--ckpt has been removed; pass --ctl MODULE:FACTORY --arg PATH instead (aio.sim.plugin)')
+    if a.ckpt:
+        ap.error('--ckpt has been removed; pass --arg PATH with --ctl MODULE:FACTORY instead')
+    c = dict(hold=CT.Hold(), pi=CT.PI(), dmc=CT.Teacher('fixed', meter=True), teacher=CT.Teacher('late'))
+    if a.ctl:
+        built, meta = PG.build(a.ctl, a.arg, device=dev)
+        if isinstance(built, dict):
+            c.update(built)
+        else:
+            cname = a.name or (meta.get('name') if isinstance(meta, dict) else None) or 'aio'
+            c[cname] = built
+    return c
+
+
+def main(argv=None):
+    ap = _parser()
+    a = ap.parse_args(argv)
+    if a.ckpt:
+        _load_ctl(ap, a)
     out = json.loads(a.out.read_text()) if a.out.exists() else {}
     for p in a.plants.split(','):
         for kind in a.kinds.split(','):
@@ -223,7 +241,7 @@ def main():
             if name in out:
                 continue
             t0 = time.time()
-            out[name] = exam(p, kind, ctls(), a.n_usual if p == 'usual' else a.n, a.seed)
+            out[name] = exam(p, kind, _load_ctl(ap, a), a.n_usual if p == 'usual' else a.n, a.seed)
             out[name]['seconds'] = round(time.time()-t0)
             a.out.write_text(json.dumps(out, indent=1))
             print(name, out[name]['key'], out[name]['points'], 'tripped', {q: v['episodes'] for q, v in out[name]['trips'].items()}, out[name]['seconds'], 's', flush=True)
