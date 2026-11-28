@@ -1230,9 +1230,9 @@ class PrivCritic(nn.Module):
         feat = self.head_norm(torch.cat((cv_mean, cv_max, mv_mean, g_f), -1))
         return torch.cat([hd(feat) for hd in self.heads], -1).reshape(*lead, len(self.heads))
 
-    def eval_state(self, prog, st, k):
+    def eval_state(self, prog, st, k, *, P=None, t=None):
         """Differentiable V(st_k) -> (n, heads) symlog values, and detached feature tuple for `fit_critic`."""
-        feats = priv_features(prog, st, k)
+        feats = priv_features(prog, st, k, P=P, t=t)
         return self(*feats), tuple(x.detach() for x in feats)
 
 

@@ -913,14 +913,16 @@ def window(net, critic, lane, a, w, gen, usual=None, later=0, rel_probe=None):
     moved = torch.zeros(4, dtype=torch.float64, device=dev)
     blind = bool(getattr(a, 'ppo', False))                        # --ppo: the critic is not given the move (the value of the state, the baseline of `ppo`)
     need_read = bool(a.id_coef > 0)
-    win_tag = (lane.tag, lane.age, k0)
+    win_tag = (lane.tag, lane.age)
     rnd_buf = _prefetch_noise(prog, k0, H, dev)
     use_amp = bool(getattr(net, 'amp', False)) and dev.type == 'cuda'
     amp_ctx = torch.autocast('cuda', dtype=torch.bfloat16) if use_amp else contextlib.nullcontext()
+    use_sim_c = bool(getattr(C, 'is_sim_compiled', lambda: False)()) and dev.type == 'cuda'
     with amp_ctx:
         for j in range(H):
             k = k0+j
-            obs, s = canonical(C.observe(prog, st, k).float(), lane.unpaired)
+            P, t = (None, None) if use_sim_c else C.step_ctx(prog, k)
+            obs, s = canonical(C.observe(prog, st, k, t=t).float(), lane.unpaired)
             F, hs = sums(net, obs, hs)
             cut = (j % hor == 0) if (hor_set is not None and j and any(j % hh == 0 for hh in hor_set)) else None
             stop = cut if opened is None else opened                  # episodes whose actor does not pass gradient back from here
@@ -948,10 +950,10 @@ def window(net, critic, lane, a, w, gen, usual=None, later=0, rel_probe=None):
                 took = torch.where(led, C.teacher(prog, st, k).float().detach()*s*mask, took)
             if priv:
                 if cut is not None and not later and w['value'] > 0:
-                    z, pf = critic.eval_state(prog, st, k)
+                    z, pf = critic.eval_state(prog, st, k, P=P, t=t)
                 else:
                     with torch.no_grad():
-                        pf = tuple(x.detach() for x in N.priv_features(prog, st, k))
+                        pf = tuple(x.detach() for x in N.priv_features(prog, st, k, P=P, t=t))
                     z = None
                 pfs.append(pf)
             elif not later:
@@ -1034,7 +1036,7 @@ def window(net, critic, lane, a, w, gen, usual=None, later=0, rel_probe=None):
                 act = torch.where(lab[:, None], took.detach()*s, act)
             if led is not False:
                 act = torch.where(led, took.detach()*s, act)
-            step_kw = dict(through=not getattr(a, 'hard', False), stops=getattr(a, 'stops', False))
+            step_kw = dict(through=not getattr(a, 'hard', False), stops=getattr(a, 'stops', False), P=P, t=t)
             if rnd_buf is not None:
                 step_kw['rnd'] = rnd_buf[j]
             st, out = C.step(prog, st, act.to(prog.dtype), k, **step_kw)
@@ -3704,7 +3706,11 @@ def main():
                     ema.avg.actor.enable_compile(dynamic=True)
             if getattr(critic, 'privileged', False):
                 critic.forward = torch.compile(critic.forward, dynamic=True)
-            print(json.dumps(dict(compiled=True, triton=getattr(triton, '__version__', 'ok'))), flush=True)
+            if getattr(a, 'mech', 0.) == 0. and hasattr(C, 'enable_sim_compile'):
+                C.enable_sim_compile(True, dynamic=False)
+                if hasattr(N, 'enable_priv_compile'):
+                    N.enable_priv_compile(True, dynamic=False)
+            print(json.dumps(dict(compiled=True, triton=getattr(triton, '__version__', 'ok'), sim_compiled=bool(getattr(C, 'is_sim_compiled', lambda: False)()))), flush=True)
         except Exception as exc:
             print(json.dumps(dict(compiled=False, reason=repr(exc))), flush=True)
     if a.eval_every > 0:

@@ -913,6 +913,8 @@ def step(prog, st, a, k, rnd=None, through=True, stops=False, *, P=None, t=None)
             P = prog.params(seg, k)
         if t is None:
             t = prog.task(seg)
+    else:
+        seg = None
     z, uu = prog.noise() if rnd is None else rnd
     zq, zw, zc, zo = z[:, :NDQ], z[:, NDQ:NDQ+NCV], z[:, NDQ+NCV:NDQ+2*NCV], z[:, NDQ+2*NCV:]
     u1, u2, u3, u4 = uu[:, :NCV], uu[:, NCV:2*NCV], uu[:, 2*NCV:3*NCV], uu[:, 3*NCV:]
@@ -969,7 +971,7 @@ def step(prog, st, a, k, rnd=None, through=True, stops=False, *, P=None, t=None)
     v = torch.where(c['integ'] > 0, vs, fl)
     mx, trip = st['mx'], None
     if prog.mg:                                                   # rows of the engine: the value, and for the teacher a level's rate
-        vm, mx, trip = _mech(prog, st, buf, seg, k)
+        vm, mx, trip = _mech(prog, st, buf, prog.seg_at(k) if seg is None else seg, k)
         mr = c['mrow'] > 0
         v = torch.where(mr, vm, v)
         fl = torch.where(mr, torch.where(c['integ'] > 0, (vm-v0)*c['tint'], vm), fl)
