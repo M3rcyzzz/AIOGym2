@@ -459,7 +459,9 @@ def test_focal_alpha_menu_kw_hard_seeds_and_perf_glue(tmp_path):
     assert len(set(hook_log['lane_tag'])) == 1 and hook_log['lane_tag'][0] is not None
     assert hook_log['settled'] >= 1 and hook_log['prefetched'] == 1
 
-    # 5. Average.update() with _foreach_lerp_ and device='cpu'
+    # 5. Average.update() with _foreach_lerp_ and device='cpu' (must never use non_blocking=True on GPU->CPU!)
+    import inspect
+    assert 'non_blocking=True' not in inspect.getsource(T.Average.update)
     lin = torch.nn.Linear(4, 3)
     avg = T.Average(lin, 0.9, device='cpu')
     w0 = lin.weight.detach().clone()

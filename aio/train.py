@@ -1949,7 +1949,7 @@ class Average:
             torch._foreach_lerp_(avg_ps, net_ps, w)
         else:
             for p, q in zip(avg_ps, net_ps):
-                p.lerp_(q.detach().to(p.device, non_blocking=True), w)
+                p.lerp_(q.detach().to(p.device), w)
 
     __call__ = update
 
