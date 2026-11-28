@@ -109,7 +109,8 @@ One row of metrics.jsonl is --row windows (default: one episode's worth).
   python -m aio.train --out RUN --device cpu --envs 32 --lanes 2 --val-n 32 --hours .2
   python -m aio.train --bench --envs 256                                                # speed and memory
 """
-import argparse, collections, contextlib, copy, faulthandler, functools, itertools, json, math, os, random, signal, subprocess, sys, threading, time, types
+import argparse, collections, contextlib, copy, faulthandler, functools, inspect, io, itertools, json, math, os, pathlib, random, signal, socket, subprocess, sys, threading, time, types
+import urllib.error, urllib.request
 from fractions import Fraction
 from pathlib import Path
 import torch
@@ -124,7 +125,239 @@ from aio.sim.prior import HORIZON
 
 
 
-GUARD_UNITS = 2     # of `usual` in a checkpoint. 2: the objective's gradient alone (1: with the imitation term's through the plant, over its weight)
+GUARD_UNITS = 3     # of `usual` in a checkpoint. 3: batch-size-invariant per-episode objective units (2: divided by n; 1: with imitation term)
+
+
+def safe_torch_load(path, map_location='cpu'):
+    """Cross-Python (3.13 pathlib._local -> <=3.12) and cross-OS (WindowsPath -> PosixPath) checkpoint loader."""
+    fn = getattr(N, 'safe_torch_load', None)
+    if fn is not None:
+        return fn(path, map_location=map_location)
+    sys.modules.setdefault('pathlib._local', pathlib)
+    saved = pathlib.WindowsPath
+    if os.name != 'nt':
+        pathlib.WindowsPath = pathlib.PureWindowsPath
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    finally:
+        pathlib.WindowsPath = saved
+
+
+def sanitize_paths(o):
+    """Recursively convert any Path / PathLike values to plain str so checkpoints never pickle pathlib._local or WindowsPath."""
+    if isinstance(o, os.PathLike):
+        return os.fspath(o)
+    if isinstance(o, dict):
+        return {k: sanitize_paths(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [sanitize_paths(v) for v in o]
+    if isinstance(o, tuple):
+        return tuple(sanitize_paths(v) for v in o)
+    return o
+
+
+def _scalar(x):
+    return float(x.detach()) if torch.is_tensor(x) else float(x)
+
+
+def _steps_caps(net):
+    """Cached capability check for optional Track A SeqAIO.steps(need_read=..., lane_tag=...) kwargs."""
+    caps = getattr(net, '_steps_caps_cache', None)
+    if caps is None:
+        try:
+            params = inspect.signature(net.steps).parameters
+            has_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+            caps = (has_kw or 'need_read' in params, has_kw or 'lane_tag' in params)
+        except (TypeError, ValueError):
+            caps = (False, False)
+        try:
+            net._steps_caps_cache = caps
+        except Exception:
+            pass
+    return caps
+
+
+def _supports_event_seed():
+    """Whether aio.sim.core.Program / build accepts optional `event_seed` (Track A anti-memorization split)."""
+    try:
+        bp = inspect.signature(C.build).parameters
+        pp = inspect.signature(C.Program.__init__).parameters
+        return ('event_seed' in bp) or ('event_seed' in pp)
+    except (TypeError, ValueError):
+        return False
+
+
+def quiet_sleep_seconds(spec, tz_name='Asia/Shanghai', now=None):
+    """Return seconds remaining in a quiet-hours window (`HH:MM-HH:MM`, e.g. `00:00-10:30`), or 0.0 if outside."""
+    if not spec or '-' not in str(spec):
+        return 0.0
+    from datetime import datetime, timedelta, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone(timedelta(hours=8)) if 'Shanghai' in str(tz_name) or 'Beijing' in str(tz_name) else timezone.utc
+    s_part, e_part = str(spec).strip().split('-', 1)
+    sh, sm = (int(x) for x in s_part.strip().split(':'))
+    eh, em = (int(x) for x in e_part.strip().split(':'))
+    s_min, e_min = (sh % 24) * 60 + sm, (eh % 24) * 60 + em
+    if s_min == e_min:
+        return 0.0
+    dt = datetime.fromtimestamp(time.time() if now is None else float(now), tz=tz)
+    cur = dt.hour * 60 + dt.minute + dt.second / 60.0
+    if s_min < e_min:
+        return (e_min - cur) * 60.0 if s_min <= cur < e_min else 0.0
+    if cur >= s_min:
+        return ((1440.0 - cur) + e_min) * 60.0
+    if cur < e_min:
+        return (e_min - cur) * 60.0
+    return 0.0
+
+
+def _prefetch_noise(prog, k0, H, dev):
+    """Defensively invoke Track A's optional `prog.prefetch_noise(...)` once per window -> list of H (z, u) pairs or None."""
+    fn = getattr(prog, 'prefetch_noise', None)
+    if fn is None:
+        return None
+    try:
+        params = [p for p in inspect.signature(fn).parameters.values()
+                  if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+        names = [p.name for p in params]
+        if names and names[0].startswith('k') and len(params) >= 3:
+            res = fn(k0, H, dev)
+        elif names and names[0].startswith('k') and len(params) == 2:
+            res = fn(k0, H)
+        elif len(params) >= 2:
+            res = fn(H, dev)
+        else:
+            res = fn(H)
+    except Exception:
+        return None
+    if res is None:
+        return None
+    if isinstance(res, tuple) and len(res) == 2 and torch.is_tensor(res[0]) and torch.is_tensor(res[1]) and res[0].shape[0] == H:
+        return [(res[0][j], res[1][j]) for j in range(H)]
+    if isinstance(res, (list, tuple)) and len(res) == H:
+        return res
+    return None
+
+
+def _fused_kw(mod):
+    """Enable CUDA fused Adam/AdamW when all trainable parameters are floating-point CUDA tensors."""
+    ps = [p for p in mod.parameters() if p.requires_grad]
+    if ps and all(p.is_cuda and p.is_floating_point() for p in ps):
+        return dict(fused=True)
+    return {}
+
+
+def merge_alloc_conf(conf, env_conf=None):
+    """Merge `--card-alloc` with `PYTORCH_CUDA_ALLOC_CONF` so env settings like `expandable_segments:True` are preserved."""
+    env_str = os.environ.get('PYTORCH_CUDA_ALLOC_CONF', '') if env_conf is None else (env_conf or '')
+    parts = {}
+    for src in (env_str, conf or ''):
+        for tok in src.split(','):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if ':' in tok:
+                k, v = tok.split(':', 1)
+                parts[k.strip()] = v.strip()
+            else:
+                parts[tok] = None
+    return ','.join(f'{k}:{v}' if v is not None else k for k, v in parts.items())
+
+
+def _has_expandable_segments(alloc_conf=''):
+    s = merge_alloc_conf(alloc_conf)
+    return any(tok.strip().lower() == 'expandable_segments:true' for tok in s.split(','))
+
+
+def maybe_empty_cache(dev, threshold=.85, expandable=None):
+    """Gate `torch.cuda.empty_cache()` behind high-watermark VRAM pressure when `expandable_segments:True` is active."""
+    if dev.type != 'cuda' or not torch.cuda.is_available():
+        return False
+    if expandable is None:
+        expandable = _has_expandable_segments()
+    idx = torch.cuda.current_device() if dev.index is None else dev.index
+    _, total = torch.cuda.mem_get_info(idx)
+    reserved = torch.cuda.memory_reserved(idx)
+    if (not expandable) or (reserved > threshold*total):
+        torch.cuda.empty_cache()
+        return True
+    return False
+
+
+@contextlib.contextmanager
+def on_device(mod, dev):
+    """Temporarily move a module (e.g. CPU EMA weights) onto `dev` for validation, restoring its original device on exit."""
+    p = next(mod.parameters(), None)
+    was = None if p is None else p.device
+    target = torch.device(dev)
+    if was is not None and was != target:
+        mod.to(target)
+    try:
+        yield mod
+    finally:
+        if was is not None and was != target:
+            mod.to(was)
+
+
+def atomic_save(obj, path):
+    """Atomically save a PyTorch file via a sibling temp file + `os.replace` so SIGKILL/preemption never corrupts checkpoints."""
+    dst = Path(path)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f'.{dst.name}.{os.getpid()}.tmp')
+    try:
+        torch.save(obj, tmp)
+        os.replace(tmp, dst)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def explicit_args(ap, argv):
+    """Return the set of argparse `dest` names explicitly provided on the CLI."""
+    opt_to_dest = {}
+    for act in ap._actions:
+        for opt in act.option_strings:
+            opt_to_dest[opt] = act.dest
+    seen = set()
+    for tok in argv:
+        if not tok.startswith('-'):
+            continue
+        opt = tok.split('=', 1)[0]
+        if opt in opt_to_dest:
+            seen.add(opt_to_dest[opt])
+    return seen
+
+
+def pack_eval_state(sd):
+    """Pack actor state dict for lightweight eval snapshots (~268 MB): >=2D floats in BF16, <=1D floats in FP32."""
+    out = {}
+    for k, v in sd.items():
+        t = v.detach().cpu()
+        if t.is_floating_point():
+            out[k] = t.to(torch.bfloat16) if t.ndim >= 2 else t.to(torch.float32)
+        else:
+            out[k] = t
+    return out
+
+
+def scheduled_lr(a, c, hours_now, hub_lr=None):
+    """Compute base actor LR from Hub override (if active) or cosine schedule indexed by `hours`, `updates`, or `samples`."""
+    if hub_lr is not None:
+        return float(hub_lr)
+    warm = min(1., (c['row']+1)/max(getattr(a, 'warmup', 1), 1))
+    basis = getattr(a, 'cosine_by', 'hours')
+    if basis == 'updates':
+        tot = getattr(a, 'total_updates', 0)
+        fac = lr_factor(c['updates'], tot) if tot > 0 else 1.
+    elif basis == 'samples':
+        tot = getattr(a, 'total_samples', 0)
+        fac = lr_factor(c['samples'], tot) if tot > 0 else 1.
+    else:
+        fac = lr_factor(hours_now, a.hours)
+    return a.lr*warm*fac
 
 
 def masked_mean(x, m):
@@ -192,7 +425,9 @@ def cap_card(dev, gb=0., conf='', spare=.5):
     if dev.type != 'cuda':
         return None
     if conf:
-        torch.cuda.memory._set_allocator_settings(conf)
+        merged = merge_alloc_conf(conf)
+        if merged:
+            torch.cuda.memory._set_allocator_settings(merged)
     if gb < 0:
         return None
     i = torch.cuda.current_device() if dev.index is None else dev.index     # (the fraction takes a card's number, not 'cuda')
@@ -480,6 +715,9 @@ def with_faults(prog, share):
         prog.fault = FT.train_draw(prog, share, prog.seed)
 
 
+_LANE_IDS = itertools.count(1)
+
+
 class Lane:
     """A batch of episodes on its way, with what is carried from one window to the next: the plant's state,
     the recurrent states of actor and critic, the last moves, and per episode how short its stretches are
@@ -492,6 +730,7 @@ class Lane:
     episodes the teacher drives."""
 
     def __init__(self, prog, a, gen, teach=0., drive=0.):
+        self.tag = next(_LANE_IDS)
         n, dev = prog.n, prog.device
         self.meter = bool(getattr(a, 'meter', False))                                        # --meter: the teacher from the instruments alone (`set_teacher`)
         self.need_teacher = bool(teach > 0 or getattr(a, 'bc_iters', 1) > 0 or getattr(a, 'bc_floor', 0.) > 0 or getattr(a, 'bench', False)
@@ -560,6 +799,8 @@ class Lane:
         self.prev, self.pm = self.prev*keep[:, None], self.pm*keep[:, None]
         self.score = torch.zeros_like(self.score)
         self.age, self.left, self.next = self.age+1, self.left-1, None
+        if bool((~keep.bool()).any()):
+            self.tag = next(_LANE_IDS)
 
     def labels(self, k, s):
         """(n, 1, rows, MVs, knots) the true responses at decision k, direct-acting frame."""
@@ -591,9 +832,9 @@ def steps_law(net, *args):
     return out+((eh,) if kh is None else (eh, kh, vh))+(() if net.pairs.unseen is None else (net.pairs.read_unseen,))
 
 
-def decide(net, lane, obs, prev, ha, s, k, gen, noise, lean=False, feats=None, law=None, readl=None, unseen=None):
+def decide(net, lane, obs, prev, ha, s, k, gen, noise, lean=False, feats=None, law=None, readl=None, unseen=None, need_read=True, lane_tag=None):
     """The actor at one decision -> the move in the direct-acting frame (with noise of that spread before the
-    tanh), the mean before the tanh, the MV mask, the responses read (n, NCV, NMV, NLAB), the state, the true
+    tanh), the mean before the tanh, the MV mask, the responses read (n, NCV, NMV, NLAB) or None when skipped, the state, the true
     ones. feats: of `sums`. law: the teacher's E, K and V there (aio.net.law_code), which the told episodes get too.
     readl: a list the law's readouts of this decision are put in (`steps_law`: E (n,NCV,NLAB), then K, V; last, of a
     network with --unseen, what it reads of what the instruments do not show). unseen: the true one there
@@ -601,7 +842,19 @@ def decide(net, lane, obs, prev, ha, s, k, gen, noise, lean=False, feats=None, l
     true = lane.labels(k, s)
     code = (true, lane.known) if law is None else (true, lane.known)+tuple(x[:, None] for x in law[:3])+(() if unseen is None else (unseen[:, None],))
     if readl is None:
-        mean, _, mask, lab, ha = run(net.steps, lean, obs[:, None], prev[:, None], ha, code, feats)
+        has_nr, has_lt = _steps_caps(net)
+        skw = {}
+        if has_nr and not need_read:
+            skw['need_read'] = False
+        if has_lt and lane_tag is not None:
+            skw['lane_tag'] = lane_tag
+        if skw:
+            if lean and torch.is_grad_enabled():
+                mean, _, mask, lab, ha = run(functools.partial(net.steps, **skw), lean, obs[:, None], prev[:, None], ha, code, feats)
+            else:
+                mean, _, mask, lab, ha = net.steps(obs[:, None], prev[:, None], ha, code, feats, **skw)
+        else:
+            mean, _, mask, lab, ha = run(net.steps, lean, obs[:, None], prev[:, None], ha, code, feats)
     else:
         mean, _, mask, lab, ha, *more = run(functools.partial(steps_law, net), lean, obs[:, None], prev[:, None], ha, code, feats)
         readl[:] = [x[:, 0] for x in more]
@@ -613,7 +866,7 @@ def decide(net, lane, obs, prev, ha, s, k, gen, noise, lean=False, feats=None, l
             sc = torch.where(lane.unpaired[:, None], sc.clamp_min(.15), sc)
         noise = noise*sc
     z = mean+noise*torch.randn(mean.shape, generator=gen, device=mean.device) if torch.is_tensor(noise) or noise else mean
-    return torch.tanh(z)*mask, mean, mask, lab[:, 0], ha, true
+    return torch.tanh(z)*mask, mean, mask, (None if lab is None else lab[:, 0]), ha, true
 
 
 RESPONDS = .2                             # --id-sign: a pair answers where its response is this large at some lag (asinh units; a fifth of the pairs in service do not)
@@ -665,8 +918,8 @@ def window(net, critic, lane, a, w, gen, usual=None, later=0, rel_probe=None):
     lab = lane.label if lane.drive is None else lane.label | lane.drive   # the imitation episodes
     taught, nsim = bool(lab.any()), float((~lab).sum())
     simw = w['sim'] if nsim else 0.
-    # the guard's unit: the objective's gradient as a mean over all n episodes, whatever share of them it is taken over
-    guard, tail = Guard(n, a.cap, dev, usual, max(simw, 1e-9)*n/max(nsim, 1.)), reach(a)
+    # the guard's unit (GUARD_UNITS=3): batch-size-invariant per-episode objective gradient (multiplied by nsim / simw)
+    guard, tail = Guard(n, a.cap, dev, usual, max(simw, 1e-9)/max(nsim, 1.)), reach(a)
     zero = torch.zeros(n, device=dev)
     tot, acc, wsum, disc, worst = zero, zero, zero, torch.ones(n, device=dev), zero
     l_bc = l_id = own = cross = 0.
@@ -686,142 +939,158 @@ def window(net, critic, lane, a, w, gen, usual=None, later=0, rel_probe=None):
     free = (lane.unpaired & (k_first > k0)) if pre_cost != 1. and lane.unpaired is not None else None
     moved = torch.zeros(4, dtype=torch.float64, device=dev)
     blind = bool(getattr(a, 'ppo', False))                        # --ppo: the critic is not given the move (the value of the state, the baseline of `ppo`)
-    for j in range(H):
-        k = k0+j
-        obs, s = canonical(C.observe(prog, st, k).float(), lane.unpaired)
-        F, hs = sums(net, obs, hs)
-        cut = (j % hor == 0) if (hor_set is not None and j and any(j % hh == 0 for hh in hor_set)) else None
-        stop = cut if opened is None else opened                  # episodes whose actor does not pass gradient back from here
-        if stop is not None and hasattr(net, 'cut'):              # --seq: the graph also runs through what its time attention keeps of the decisions before (11-23: the cut stopped nothing there)
-            net.cut(stop)
-        o, p, h = (obs, prev, ha) if stop is None else (cut_rows(obs, stop), cut_rows(prev, stop), cut_rows(ha[0], stop)[None])
-        if taught:                                                # imitation: the last move is data, as the plant's answer is
-            p = cut_rows(p, lab)
-        if can_probe:                                             # (n,) before its first event: probed (only blind episodes when --unpaired > 0; never when `when` is untrained under --bc-iters 0)
-            pre = ((k < k_first) & lane.unpaired).float() if lane.unpaired is not None else (k < k_first).float()
-        else:
-            pre = None
-        noise = a.noise if pre is None else (a.noise+(probe-a.noise)*pre)[:, None]
-        law = N.law_code(prog, st, k, s) if net.pairs.law and (taught or keep) else None    # the teacher's E, K, V of this decision, and the law's move
-        hid = N.unseen_code(prog, st, k) if law is not None and net.pairs.unseen is not None else None    # --unseen: what the instruments do not show
-        # (--meter: the told episodes are not told it. The teacher's E is then of its own estimate of these, not of the true ones: the E read-out
-        #  takes the network's own reading in every episode, as it will when it runs; the reading's labels stay the true ones)
-        u, mean, mask, read, ha, true = decide(net, lane, o, p, h, s, k, gen, noise, a.lean, F, law, readl, None if lane.meter else hid)
-        if simw > 0 and u.requires_grad:
-            u.register_hook(guard.hold)
-        tch, took = driven(lane, st, k, s, mask, u, a.drive_noise, gen, law, getattr(a, 'bc_own', False)) if taught else (None, u)
-        led = lane.lead is not None and k < lead_max and (k < lane.lead)[:, None]
-        if led is not False:                                      # --lead: the teacher's move goes to the plant, and is the last move the network is given
-            took = torch.where(led, C.teacher(prog, st, k).float().detach()*s*mask, took)
-        if priv:
-            if cut is not None and not later and w['value'] > 0:
-                z, pf = critic.eval_state(prog, st, k)
+    need_read = bool(a.id_coef > 0)
+    win_tag = (lane.tag, lane.age)
+    rnd_buf = _prefetch_noise(prog, k0, H, dev)
+    use_amp = bool(getattr(net, 'amp', False)) and dev.type == 'cuda'
+    amp_ctx = torch.autocast('cuda', dtype=torch.bfloat16) if use_amp else contextlib.nullcontext()
+    use_sim_c = bool(getattr(C, 'is_sim_compiled', lambda: False)()) and dev.type == 'cuda'
+    with amp_ctx:
+        for j in range(H):
+            k = k0+j
+            P, t = (None, None) if use_sim_c else C.step_ctx(prog, k)
+            obs, s = canonical(C.observe(prog, st, k, t=t).float(), lane.unpaired)
+            F, hs = sums(net, obs, hs)
+            cut = (j % hor == 0) if (hor_set is not None and j and any(j % hh == 0 for hh in hor_set)) else None
+            stop = cut if opened is None else opened                  # episodes whose actor does not pass gradient back from here
+            if stop is not None and hasattr(net, 'cut'):              # --seq: the graph also runs through what its time attention keeps of the decisions before (11-23: the cut stopped nothing there)
+                net.cut(stop)
+            o, p, h = (obs, prev, ha) if stop is None else (cut_rows(obs, stop), cut_rows(prev, stop), cut_rows(ha[0], stop)[None])
+            if taught:                                                # imitation: the last move is data, as the plant's answer is
+                p = cut_rows(p, lab)
+            if can_probe:                                             # (n,) before its first event: probed (only blind episodes when --unpaired > 0; never when `when` is untrained under --bc-iters 0)
+                pre = ((k < k_first) & lane.unpaired).float() if lane.unpaired is not None else (k < k_first).float()
             else:
+                pre = None
+            noise = a.noise if pre is None else (a.noise+(probe-a.noise)*pre)[:, None]
+            law = N.law_code(prog, st, k, s) if net.pairs.law and (taught or keep) else None    # the teacher's E, K, V of this decision, and the law's move
+            hid = N.unseen_code(prog, st, k) if law is not None and net.pairs.unseen is not None else None    # --unseen: what the instruments do not show
+            # (--meter: the told episodes are not told it. The teacher's E is then of its own estimate of these, not of the true ones: the E read-out
+            #  takes the network's own reading in every episode, as it will when it runs; the reading's labels stay the true ones)
+            u, mean, mask, read, ha, true = decide(net, lane, o, p, h, s, k, gen, noise, a.lean, F, law, readl, None if lane.meter else hid,
+                                                   need_read=need_read, lane_tag=win_tag)
+            if simw > 0 and u.requires_grad:
+                u.register_hook(guard.hold)
+            tch, took = driven(lane, st, k, s, mask, u, a.drive_noise, gen, law, getattr(a, 'bc_own', False)) if taught else (None, u)
+            led = lane.lead is not None and k < lead_max and (k < lane.lead)[:, None]
+            if led is not False:                                      # --lead: the teacher's move goes to the plant, and is the last move the network is given
+                took = torch.where(led, C.teacher(prog, st, k).float().detach()*s*mask, took)
+            if priv:
+                if cut is not None and not later and w['value'] > 0:
+                    z, pf = critic.eval_state(prog, st, k, P=P, t=t)
+                else:
+                    with torch.no_grad():
+                        pf = tuple(x.detach() for x in N.priv_features(prog, st, k, P=P, t=t))
+                    z = None
+                pfs.append(pf)
+            elif not later:
+                z, hc = run(critic.steps, a.lean, obs[:, None], prev.detach()[:, None], (torch.zeros_like(took) if blind else took.detach())[:, None], hc, (true, lane.cknown), F)
+                z = z[:, 0]
+            if cut is not None:                                       # a stretch ends: what it cost and what the critic says follows
+                if z is not None:
+                    tot = tot+torch.where(cut, acc+w['value']*disc*value_of(z, a), zero)
+                    wsum = wsum+torch.where(cut, w['value']*disc*tail, zero)
+                else:
+                    tot = tot+torch.where(cut, acc, zero)
+                acc, disc = torch.where(cut, zero, acc), torch.where(cut, torch.ones_like(disc), disc)
+                hc = cut_rows(hc[0], cut)[None]
+                st, pm = {q: cut_rows(x, cut) for q, x in st.items()}, cut_rows(pm, cut)
+            m = mask*(~st['fail']).float()[:, None]
+            if taught:
+                l_bc = l_bc+masked_mean((torch.tanh(mean)*mask-tch).square(), m*lab[:, None])
+                rec.setdefault('tch', []).append(tch); rec.setdefault('m', []).append(m)
+                if pre is not None:
+                    rec.setdefault('pre', []).append(pre)
+                if law is not None:                                   # of the tracked rows (the first nmv row slots)
+                    for q, x in zip(('E', 'K', 'V', 'lm'), (law[0][:, :nmv], law[1][:, :nmv], law[2], law[3])):
+                        rec.setdefault(q, []).append(x)
+                    if hid is not None:
+                        rec.setdefault('U', []).append(hid[:, :nmv]); rec.setdefault('since', []).append(prog.since(k).clamp(0, 9999).float())
+            if keep:                                                  # E, K, V as read towards the teacher's, on every episode (as `learn` does where the teacher is all)
+                if 'E' in kept:
+                    eh = (N.taught(net, readl[0][:, :nmv].float(), 'E')-N.taught(net, law[0][:, :nmv], 'E')).square().mean(-1)
+                    l_law['head'] = l_law['head']+masked_mean(eh, trk*m.amax(-1)[:, None])
+                    for q, v in e_by_kind(eh.detach(), trk*m.amax(-1)[:, None], prog.ar < prog.nl).items():
+                        l_law[q] = l_law.get(q, 0.)+v
+                if 'E' in kept and hid is not None:                   # and what the instruments do not show, which the E read-out is given
+                    l_law['unseen'] = l_law.get('unseen', 0.)+masked_mean(huber1(readl[-1][:, :nmv].float(), hid[:, :nmv]).mean(-1), trk*m.amax(-1)[:, None])
+                if 'K' in kept and len(readl)-(hid is not None) > 1:
+                    ek = (readl[1][:, :nmv].float()-law[1][:, :nmv]).square().mean(-1)
+                    l_law['gain'] = l_law['gain']+masked_mean(ek, trk[:, :, None]*m[:, None, :])
+                    for q, v in k_untold(ek.detach(), trk[:, :, None]*m[:, None, :], lane.known, lane.link[:, :nmv]).items():
+                        l_law[q] = l_law.get(q, 0.)+v
+                if 'V' in kept and len(readl)-(hid is not None) > 1:
+                    l_law['valve'] = l_law['valve']+masked_mean((readl[2].float()-law[2]).square(), m)
+            want_rel = rel_probe is not None and getattr(a, 'rel_id_coef', 0.) > 0 and getattr(net.actor, 'rel_feat_last', None) is not None and k >= 16
+            if need_read or want_rel:
+                pairs = lane.rows[:, :, None]*m.detach()[:, None, :]
+            if need_read and read is not None:
+                err = read_error(net, read, true[:, 0], a)                  # (--diff S: both as changes from knot to knot)
+                l_id = l_id+masked_mean(err, pairs)
+                ed = err.detach()
+                own, cross = own+masked_mean(ed, pairs*lane.link), cross+masked_mean(ed, pairs*(1-lane.link))
+                if lane.unpaired is not None:                             # told the pairing (the read-out has it given) and not told, apart
+                    for q, e in (('own_told', ~lane.unpaired), ('own_blind', lane.unpaired)):
+                        split[q] = split[q]+masked_mean(ed, pairs*lane.link*e.float()[:, None, None])
+            if want_rel:
+                # Training-only auxiliary supervision strictly on UNPUBLISHED pairs (branchless GPU math: zero per-step CUDA->CPU syncs!)
+                unpub = pairs*(1.-lane.link) if lane.unpaired is None else pairs*torch.where(lane.unpaired[:, None, None], torch.ones_like(lane.link), 1.-lane.link)
+                rf = net.actor.rel_feat_last
+                lg_r = rel_probe(rf)
+                lv_t = (true[:, 0].abs().amax(-1) > RESPONDS).to(lg_r.dtype)
+                sg_t = (true[:, 0, ..., -1] > 0).to(lg_r.dtype)
+                bce_l = torch.nn.functional.binary_cross_entropy_with_logits(lg_r[..., 0], lv_t, reduction='none')
+                bce_s = torch.nn.functional.binary_cross_entropy_with_logits(lg_r[..., 1], sg_t, reduction='none')
+                unpub_s = unpub.sum()
+                m_pos, m_neg = unpub*lv_t, unpub*(1.-lv_t)
+                sp, sn = m_pos.sum(), m_neg.sum()
+                hp, hn = (sp > 0).to(lg_r.dtype), (sn > 0).to(lg_r.dtype)
+                l_live = (hp*(bce_l*m_pos).sum()/sp.clamp_min(1.) + hn*(bce_l*m_neg).sum()/sn.clamp_min(1.))/(hp+hn).clamp_min(1.)
+                l_sgn = (bce_s*m_pos).sum()/sp.clamp_min(1.)
+                step_rel = l_live+l_sgn
+                if lg_r.shape[-1] >= 3:
+                    step_rel = step_rel+.5*(huber1(lg_r[..., 2], true[:, 0].abs().amax(-1).to(lg_r.dtype))*m_pos).sum()/sp.clamp_min(1.)
+                has_u = (unpub_s > 0).to(lg_r.dtype)
+                l_rel = l_rel+step_rel*has_u
+                rel_n = rel_n+has_u
                 with torch.no_grad():
-                    pf = tuple(x.detach() for x in N.priv_features(prog, st, k))
-                z = None
-            pfs.append(pf)
-        elif not later:
-            z, hc = run(critic.steps, a.lean, obs[:, None], prev.detach()[:, None], (torch.zeros_like(took) if blind else took.detach())[:, None], hc, (true, lane.cknown), F)
-            z = z[:, 0]
-        if cut is not None:                                       # a stretch ends: what it cost and what the critic says follows
-            if z is not None:
-                tot = tot+torch.where(cut, acc+w['value']*disc*value_of(z, a), zero)
-                wsum = wsum+torch.where(cut, w['value']*disc*tail, zero)
-            else:
-                tot = tot+torch.where(cut, acc, zero)
-            acc, disc = torch.where(cut, zero, acc), torch.where(cut, torch.ones_like(disc), disc)
-            hc = cut_rows(hc[0], cut)[None]
-            st, pm = {q: cut_rows(x, cut) for q, x in st.items()}, cut_rows(pm, cut)
-        m = mask*(~st['fail']).float()[:, None]
-        if taught:
-            l_bc = l_bc+masked_mean((torch.tanh(mean)*mask-tch).square(), m*lab[:, None])
-            rec.setdefault('tch', []).append(tch); rec.setdefault('m', []).append(m)
-            if pre is not None:
-                rec.setdefault('pre', []).append(pre)
-            if law is not None:                                   # of the tracked rows (the first nmv row slots)
-                for q, x in zip(('E', 'K', 'V', 'lm'), (law[0][:, :nmv], law[1][:, :nmv], law[2], law[3])):
-                    rec.setdefault(q, []).append(x)
-                if hid is not None:
-                    rec.setdefault('U', []).append(hid[:, :nmv]); rec.setdefault('since', []).append(prog.since(k).clamp(0, 9999).float())
-        if keep:                                                  # E, K, V as read towards the teacher's, on every episode (as `learn` does where the teacher is all)
-            if 'E' in kept:
-                eh = (N.taught(net, readl[0][:, :nmv].float(), 'E')-N.taught(net, law[0][:, :nmv], 'E')).square().mean(-1)
-                l_law['head'] = l_law['head']+masked_mean(eh, trk*m.amax(-1)[:, None])
-                for q, v in e_by_kind(eh.detach(), trk*m.amax(-1)[:, None], prog.ar < prog.nl).items():
-                    l_law[q] = l_law.get(q, 0.)+v
-            if 'E' in kept and hid is not None:                   # and what the instruments do not show, which the E read-out is given
-                l_law['unseen'] = l_law.get('unseen', 0.)+masked_mean(huber1(readl[-1][:, :nmv].float(), hid[:, :nmv]).mean(-1), trk*m.amax(-1)[:, None])
-            if 'K' in kept and len(readl)-(hid is not None) > 1:
-                ek = (readl[1][:, :nmv].float()-law[1][:, :nmv]).square().mean(-1)
-                l_law['gain'] = l_law['gain']+masked_mean(ek, trk[:, :, None]*m[:, None, :])
-                for q, v in k_untold(ek.detach(), trk[:, :, None]*m[:, None, :], lane.known, lane.link[:, :nmv]).items():
-                    l_law[q] = l_law.get(q, 0.)+v
-            if 'V' in kept and len(readl)-(hid is not None) > 1:
-                l_law['valve'] = l_law['valve']+masked_mean((readl[2].float()-law[2]).square(), m)
-        pairs = lane.rows[:, :, None]*m[:, None, :]
-        err = read_error(net, read, true[:, 0], a)                  # (--diff S: both as changes from knot to knot)
-        l_id = l_id+masked_mean(err, pairs)
-        own, cross = own+masked_mean(err.detach(), pairs*lane.link), cross+masked_mean(err.detach(), pairs*(1-lane.link))
-        if lane.unpaired is not None:                             # told the pairing (the read-out has it given) and not told, apart
-            for q, e in (('own_told', ~lane.unpaired), ('own_blind', lane.unpaired)):
-                split[q] = split[q]+masked_mean(err.detach(), pairs*lane.link*e.float()[:, None, None])
-        if rel_probe is not None and getattr(a, 'rel_id_coef', 0.) > 0 and getattr(net.actor, 'rel_feat_last', None) is not None and k >= 16:
-            # Training-only auxiliary supervision strictly on UNPUBLISHED pairs (branchless GPU math: zero per-step CUDA->CPU syncs!)
-            unpub = pairs*(1.-lane.link) if lane.unpaired is None else pairs*torch.where(lane.unpaired[:, None, None], torch.ones_like(lane.link), 1.-lane.link)
-            rf = net.actor.rel_feat_last
-            lg_r = rel_probe(rf)
-            lv_t = (true[:, 0].abs().amax(-1) > RESPONDS).to(lg_r.dtype)
-            sg_t = (true[:, 0, ..., -1] > 0).to(lg_r.dtype)
-            bce_l = torch.nn.functional.binary_cross_entropy_with_logits(lg_r[..., 0], lv_t, reduction='none')
-            bce_s = torch.nn.functional.binary_cross_entropy_with_logits(lg_r[..., 1], sg_t, reduction='none')
-            unpub_s = unpub.sum()
-            m_pos, m_neg = unpub*lv_t, unpub*(1.-lv_t)
-            sp, sn = m_pos.sum(), m_neg.sum()
-            hp, hn = (sp > 0).to(lg_r.dtype), (sn > 0).to(lg_r.dtype)
-            l_live = (hp*(bce_l*m_pos).sum()/sp.clamp_min(1.) + hn*(bce_l*m_neg).sum()/sn.clamp_min(1.))/(hp+hn).clamp_min(1.)
-            l_sgn = (bce_s*m_pos).sum()/sp.clamp_min(1.)
-            step_rel = l_live+l_sgn
-            if lg_r.shape[-1] >= 3:
-                step_rel = step_rel+.5*(huber1(lg_r[..., 2], true[:, 0].abs().amax(-1).to(lg_r.dtype))*m_pos).sum()/sp.clamp_min(1.)
-            has_u = (unpub_s > 0).to(lg_r.dtype)
-            l_rel = l_rel+step_rel*has_u
-            rel_n = rel_n+has_u
-            with torch.no_grad():
-                pl, ps = (lg_r[..., 0] > 0).to(lv_t.dtype), (lg_r[..., 1] > 0).to(sg_t.dtype)
-                rel_stats = rel_stats+torch.stack((((pl == lv_t)*unpub).sum(), unpub_s, ((ps == sg_t)*m_pos).sum(), sp)).double()
-        act = (u if simw > 0 else u.detach())*s                   # teacher alone: the plant is run without the graph
-        if act.requires_grad:
-            act.register_hook(guard)
-        if taught:                                                # after the hook: an imitation episode's move reaches the plant as data
-            act = torch.where(lab[:, None], took.detach()*s, act)
-        if led is not False:
-            act = torch.where(led, took.detach()*s, act)
-        st, out = C.step(prog, st, act.to(prog.dtype), k, through=not getattr(a, 'hard', False), stops=getattr(a, 'stops', False))
-        cost, worst = fail_above(out['fail'], OR.objective(out, st, c, a.tau, a.cost_w, a.log_w).float(), worst, a.fail_cost)
-        dm = torch.tanh(mean)*mask
-        if led is not False:                                      # --lead: in the teacher's hands the network's move goes nowhere; the teacher's is the last one
-            dm = torch.where(led, took.detach(), dm)
-        if a.smooth:                                              # a move that turns back on the last one costs; a ramp does not (11-23: not on a move the teacher made, which
-            cost = cost+a.smooth*(dm-pm).square().sum(-1)/mask.sum(-1).clamp_min(1.)    # pushed the network's unused move to 0, ten times over through the episode's own small level)
-        if getattr(a, 'rev_smooth', 0.):                          # reversal-only anti-chatter penalty: zero drag on monotonic moves/steps, penalizes sign flips only
-            cost = cost+a.rev_smooth*torch.relu(-dm*pm).sum(-1)/mask.sum(-1).clamp_min(1.)
-        if free is not None:
-            free = free & (k < k_first)
-            cost = torch.where(free, pre_cost*cost, cost)
-        with torch.no_grad():                                     # gauges: the size of the moves, how many stand at a limit, how far one is from the last
-            moved = moved+torch.stack(((dm.square()*m).sum(), ((dm.abs() > .95).float()*m).sum(), ((dm-pm).square()*m).sum(), m.sum())).double()
-        pm = dm
-        acc, wsum, disc = acc+disc*cost, wsum+disc, disc*a.gamma
-        lane.score += out['outside'].sum(-1)*(k >= prog.k_first)
-        for q, x in (('obs', obs), ('prev', prev), ('act', torch.zeros_like(took) if blind else took), ('cost', cost), ('lab', true[:, 0]))+(() if (later or priv) else (('z', z),)):
-            rec[q].append(x.detach())
-        if blind:                                                 # the move as made, the mean it was drawn around, the MVs it is of
-            for q, x in (('u', took), ('mean', mean), ('mk', m)):
-                rec.setdefault(q, []).append(x.detach())
-        if F is not None:
-            fs.append(F[:, 0])
-        prev = took
+                    pl, ps = (lg_r[..., 0] > 0).to(lv_t.dtype), (lg_r[..., 1] > 0).to(sg_t.dtype)
+                    rel_stats = rel_stats+torch.stack((((pl == lv_t)*unpub).sum(), unpub_s, ((ps == sg_t)*m_pos).sum(), sp)).double()
+            act = (u if simw > 0 else u.detach())*s                   # teacher alone: the plant is run without the graph
+            if act.requires_grad:
+                act.register_hook(guard)
+            if taught:                                                # after the hook: an imitation episode's move reaches the plant as data
+                act = torch.where(lab[:, None], took.detach()*s, act)
+            if led is not False:
+                act = torch.where(led, took.detach()*s, act)
+            step_kw = dict(through=not getattr(a, 'hard', False), stops=getattr(a, 'stops', False), P=P, t=t)
+            if rnd_buf is not None:
+                step_kw['rnd'] = rnd_buf[j]
+            st, out = C.step(prog, st, act.to(prog.dtype), k, **step_kw)
+            cost, worst = fail_above(out['fail'], OR.objective(out, st, c, a.tau, a.cost_w, a.log_w).float(), worst, a.fail_cost)
+            dm = torch.tanh(mean)*mask
+            if led is not False:                                      # --lead: in the teacher's hands the network's move goes nowhere; the teacher's is the last one
+                dm = torch.where(led, took.detach(), dm)
+            if a.smooth:                                              # a move that turns back on the last one costs; a ramp does not (11-23: not on a move the teacher made, which
+                cost = cost+a.smooth*(dm-pm).square().sum(-1)/mask.sum(-1).clamp_min(1.)    # pushed the network's unused move to 0, ten times over through the episode's own small level)
+            if getattr(a, 'rev_smooth', 0.):                          # reversal-only anti-chatter penalty: zero drag on monotonic moves/steps, penalizes sign flips only
+                cost = cost+a.rev_smooth*torch.relu(-dm*pm).sum(-1)/mask.sum(-1).clamp_min(1.)
+            if free is not None:
+                free = free & (k < k_first)
+                cost = torch.where(free, pre_cost*cost, cost)
+            with torch.no_grad():                                     # gauges: the size of the moves, how many stand at a limit, how far one is from the last
+                moved = moved+torch.stack(((dm.square()*m).sum(), ((dm.abs() > .95).float()*m).sum(), ((dm-pm).square()*m).sum(), m.sum())).double()
+            pm = dm
+            acc, wsum, disc = acc+disc*cost, wsum+disc, disc*a.gamma
+            lane.score += out['outside'].sum(-1)*(k >= prog.k_first)
+            for q, x in (('obs', obs), ('prev', prev), ('act', torch.zeros_like(took) if blind else took), ('cost', cost), ('lab', true[:, 0]))+(() if (later or priv) else (('z', z),)):
+                rec[q].append(x.detach())
+            if blind:                                                 # the move as made, the mean it was drawn around, the MVs it is of
+                for q, x in (('u', took), ('mean', mean), ('mk', m)):
+                    rec.setdefault(q, []).append(x.detach())
+            if F is not None:
+                fs.append(F[:, 0])
+            prev = took
     if later and not priv:                                        # the critic over the window's decisions in one call, from the state it had
         seq = [torch.stack(rec[q], 1) for q in ('obs', 'prev', 'act', 'lab')]+[torch.stack(fs, 1) if fs else None]
         parts = [slice(i, i+later) for i in range(0, n, later)]
@@ -834,7 +1103,7 @@ def window(net, critic, lane, a, w, gen, usual=None, later=0, rel_probe=None):
     F, _ = sums(net, obs, hs)                                     # not kept: the next window starts at this decision
     if not priv:
         with torch.no_grad(), (net.peek() if hasattr(net, 'peek') else contextlib.nullcontext()):    # (--seq: made again as the next window's first, not kept)
-            u1, _, mask, _, _, true = decide(net, lane, obs, prev, ha, s, k1, gen, a.noise, feats=F)
+            u1, _, mask, _, _, true = decide(net, lane, obs, prev, ha, s, k1, gen, a.noise, feats=F, need_read=False)
             if lane.drive is not None and k1 < HORIZON:
                 u1 = driven(lane, st, k1, s, mask, u1, a.drive_noise, gen)[1]
         if blind:
@@ -864,23 +1133,31 @@ def window(net, critic, lane, a, w, gen, usual=None, later=0, rel_probe=None):
         rec[q].append(x.detach())
     rec = {q: torch.stack(x, 1) if isinstance(x, list) else x for q, x in rec.items()}
     rec['feats'] = torch.stack(fs, 1) if fs else None
-    l_sim = masked_mean(tot/(tot.detach()+a.floor*wsum), (~lab).float())   # every episode relative to its own level
-    loss = simw*l_sim+w['bc']*a.bc_coef*l_bc/H+a.id_coef*l_id/H
+    sim_m = (~lab).float()
+    ep_loss = tot/(tot.detach()+a.floor*wsum)
+    focal_alpha = float(getattr(a, 'focal_alpha', 0.))
+    if focal_alpha > 0:
+        fw = (tot.detach()/(a.floor*wsum).clamp_min(1e-6)).clamp(.5, 3.).pow(focal_alpha)
+        fw = fw/masked_mean(fw, sim_m).clamp_min(1e-6)
+        l_sim = masked_mean(ep_loss*fw, sim_m)
+    else:
+        l_sim = masked_mean(ep_loss, sim_m)                       # every episode relative to its own level
+    loss = simw*l_sim+w['bc']*a.bc_coef*l_bc/H+(a.id_coef*l_id/H if need_read else 0.)
     rel_n_val = float(rel_n)
     if rel_n_val > 0:
         loss = loss+a.rel_id_coef*(l_rel/rel_n_val)
-    log = dict(sim=float(l_sim.detach()) if nsim else None, cost=float(rec['cost'].mean()), bc=float(l_bc.detach())/H if taught else None, id=float(l_id.detach())/H,
-               id_own=float(own)/H, id_cross=float(cross)/H, steps=n*H)
+    log = dict(sim=_scalar(l_sim) if nsim else None, cost=float(rec['cost'].mean()), bc=_scalar(l_bc)/H if taught else None, id=_scalar(l_id)/H,
+               id_own=_scalar(own)/H, id_cross=_scalar(cross)/H, steps=n*H)
     if rel_n_val > 0:
         rs = rel_stats.tolist()
-        log.update(rel_id=float(l_rel.detach())/rel_n_val, rel_live=rs[0]/max(rs[1], 1.), rel_sign=rs[2]/max(rs[3], 1.))
+        log.update(rel_id=_scalar(l_rel)/rel_n_val, rel_live=rs[0]/max(rs[1], 1.), rel_sign=rs[2]/max(rs[3], 1.))
     if lane.unpaired is not None:
-        log.update({'id_'+q: float(x)/H for q, x in split.items()})
+        log.update({'id_'+q: _scalar(x)/H for q, x in split.items()})
     moved = moved.tolist()
     log.update(act_rms=(moved[0]/max(moved[3], 1.))**.5, act_sat=moved[1]/max(moved[3], 1.), act_step=(moved[2]/max(moved[3], 1.))**.5)
     if keep:
         loss = loss+a.law_coef*sum(x for x in l_law.values() if torch.is_tensor(x))/H
-        log.update({q: float(x)/H for q, x in l_law.items() if torch.is_tensor(x) or q in ('k_own', 'k_cross', 'head_lin', 'head_mech')})
+        log.update({q: _scalar(x)/H for q, x in l_law.items() if torch.is_tensor(x) or q in ('k_own', 'k_cross', 'head_lin', 'head_mech')})
     lane.st, lane.ha, lane.hc, lane.hs, lane.prev, lane.pm, lane.k = C.detach(st), ha.detach(), hc.detach(), hs, prev.detach(), pm.detach(), k1
     return loss, rec, guard, log
 
@@ -934,6 +1211,32 @@ def adapt(lane, guard, a):
     lane.level = (lane.level+held.long()-back.long()).clamp(0, top_level(a))
 
 
+def _critic_items(critic, lane, rec, a, part=None):
+    """Prepare one or more (slim_rec, known, tgt, said, chunk) tuples for `fit_to` / `fit_to_multi`."""
+    if lane.due is not None:
+        lane.due.add(rec, part)
+        items = []
+        while lane.due.ready():
+            drec, dpart, tgt, said = lane.due.pop()
+            items.append((drec, lane.cknown if dpart is None else lane.cknown[dpart], tgt, said, chunk_of(a, lane)))
+        return items
+    priv = bool(getattr(critic, 'privileged', False))
+    keys = ('priv',) if priv else ('obs', 'prev', 'act', 'lab', 'hc', 'feats')
+    if part is not None:
+        slim = {q: (tuple(t[part] for t in rec[q]) if q == 'priv' else (rec[q][:, part] if q == 'hc' else rec[q][part]) if torch.is_tensor(rec[q]) else rec[q])
+                for q in keys if q in rec}
+        cost, zrec = rec['cost'][part], rec['z'][part]
+    else:
+        slim = {q: rec[q] for q in keys if q in rec}
+        cost, zrec = rec['cost'], rec['z']
+    with torch.no_grad():
+        z_boot = zrec.mean(-1) if priv else zrec.amax(-1)
+        v = symexp(z_boot).clamp_min(0.)
+        tgt = symlog(td_targets(cost, v, a.gamma, a.lam))[..., None]
+        said = float(v.mean())
+    return [(slim, lane.cknown[:tgt.shape[0]], tgt, said, chunk_of(a, lane))]
+
+
 def fit_critic(critic, copt, lane, rec, a, part=None):
     """The critic on the window just run: both heads towards the TD(lambda) targets built from the costs and
     the more pessimistic head's values (as they were before this fit), in symlog. The episodes go through
@@ -965,6 +1268,19 @@ def fit_due(critic, copt, lane, a, last=False):
     return out
 
 
+def _critic_feats(critic, rec, H):
+    priv = bool(getattr(critic, 'privileged', False))
+    feats = rec.get('feats')
+    if not priv and feats is None and getattr(critic, 'pairs', None) is not None and critic.pairs.stats is not None:
+        with torch.no_grad():
+            ncv, nmv = N.shape_of(rec['obs'].shape[-1])
+            base, spair = N.base_size(ncv, nmv), N.sizes(ncv, nmv)[7]
+            ns = critic.pairs.stats.size_of(ncv, nmv)
+            hs0 = rec['hc'][0, :, base+spair:base+spair+ns]
+            feats, _ = critic.pairs.stats(rec['obs'][:, :H], hs0)
+    return feats
+
+
 def fit_to(critic, copt, known, rec, tgt, a, chunk=None):
     """--critic-iters steps of the critic on a window's record towards symlog targets (n, H, heads or 1). chunk: the
     episodes that go through at a time (None: --fit-chunk; `chunk_of`)."""
@@ -972,15 +1288,7 @@ def fit_to(critic, copt, known, rec, tgt, a, chunk=None):
     chunk = a.fit_chunk if chunk is None else chunk
     parts = [slice(i, i+chunk) for i in range(0, n, chunk)] if chunk else [slice(None)]
     priv = bool(getattr(critic, 'privileged', False))
-    feats = rec.get('feats')
-    if not priv and feats is None and getattr(critic, 'pairs', None) is not None and critic.pairs.stats is not None:
-        # Compute running-RLS stats once instead of redundantly on every critic_iter (e.g. SeqAIO has no actor stats)
-        with torch.no_grad():
-            ncv, nmv = N.shape_of(rec['obs'].shape[-1])
-            base, spair = N.base_size(ncv, nmv), N.sizes(ncv, nmv)[7]
-            ns = critic.pairs.stats.size_of(ncv, nmv)
-            hs0 = rec['hc'][0, :, base+spair:base+spair+ns]
-            feats, _ = critic.pairs.stats(rec['obs'][:, :H], hs0)
+    feats = _critic_feats(critic, rec, H)
     out = {}
     for i in range(a.critic_iters):
         copt.zero_grad(set_to_none=True)
@@ -997,6 +1305,51 @@ def fit_to(critic, copt, known, rec, tgt, a, chunk=None):
             loss, zs = loss+float(part.detach()), zs+[z.detach() if tgt.shape[-1] > 1 else z.detach().mean(-1, keepdim=True)]
         if i == 0:
             out.update(critic=loss, ev=float(1-(torch.cat(zs)-tgt).var()/tgt.var().clamp_min(1e-8)))
+        if not math.isfinite(loss):
+            copt.zero_grad(set_to_none=True)
+            break
+        if torch.isfinite(torch.nn.utils.clip_grad_norm_(critic.parameters(), a.clip)):
+            copt.step()
+    return out
+
+
+def fit_to_multi(critic, copt, items, a):
+    """Deferred critic fit across multiple accumulated windows (--accum > 1): averages critic gradients over all
+    buffered windows and steps `copt` once per critic iteration (exact 1:1 critic-to-actor parity with accum=1)."""
+    if not items:
+        return {}
+    if len(items) == 1:
+        rec, known, tgt, said, chunk = items[0]
+        return dict(value=said, **fit_to(critic, copt, known, rec, tgt, a, chunk))
+    priv = bool(getattr(critic, 'privileged', False))
+    prep = []
+    for rec, known, tgt, said, chunk in items:
+        n, H = tgt.shape[:2]
+        ck = a.fit_chunk if chunk is None else chunk
+        parts = [slice(i, i+ck) for i in range(0, n, ck)] if ck else [slice(None)]
+        prep.append((rec, known, tgt, said, n, H, parts, _critic_feats(critic, rec, H)))
+    m = len(prep)
+    out = {}
+    for i in range(a.critic_iters):
+        copt.zero_grad(set_to_none=True)
+        loss, zs, tgts = 0., [], []
+        for rec, known, tgt, _, n, H, parts, feats in prep:
+            for p in parts:
+                if priv:
+                    z = critic(*(x[p, :H] for x in rec['priv']))
+                else:
+                    z, _ = critic.steps(rec['obs'][p, :H], rec['prev'][p, :H], rec['act'][p, :H], rec['hc'][:, p], (rec['lab'][p, :H], known[p]),
+                                        None if feats is None else feats[p])
+                part = (z-tgt[p]).square().sum()/(n*H*z.shape[-1]*m)
+                if torch.isfinite(part):
+                    part.backward()
+                loss += float(part.detach())
+                if i == 0:
+                    zs.append((z.detach() if tgt.shape[-1] > 1 else z.detach().mean(-1, keepdim=True)).reshape(-1))
+                    tgts.append(tgt[p].reshape(-1))
+        if i == 0:
+            zc, tc = torch.cat(zs), torch.cat(tgts)
+            out.update(value=sum(x[3] for x in prep)/m, critic=loss, ev=float(1-(zc-tc).var()/tc.var().clamp_min(1e-8)))
         if not math.isfinite(loss):
             copt.zero_grad(set_to_none=True)
             break
@@ -1035,38 +1388,78 @@ def parts(net):
     return dict(zip(keys, torch.stack(vals).tolist()))
 
 
+def _actor_grad_norm(net):
+    """Total unclipped L2 gradient norm of actor parameters (without modifying `.grad`)."""
+    gs = [p.grad.detach() for p in net.parameters() if p.grad is not None]
+    if not gs:
+        return torch.zeros((), device=next(net.parameters()).device)
+    return torch.stack([n.float() for n in torch._foreach_norm(gs)]).norm()
+
+
+def _clip_actor_grads(net, opt, clip):
+    """Clip actor gradients in-place (separate Muon/AdamW norms for MuonAdamW) -> pre-clip combined norm."""
+    if isinstance(opt, MuonAdamW):
+        mu_ps = [p for g in opt.param_groups if g.get('kind') == 'muon' for p in g['params'] if p.grad is not None]
+        ad_ps = [p for g in opt.param_groups if g.get('kind') != 'muon' for p in g['params'] if p.grad is not None]
+        dev = next(net.parameters()).device
+        gn_m = torch.nn.utils.clip_grad_norm_(mu_ps, clip) if mu_ps else torch.zeros((), device=dev)
+        gn_a = torch.nn.utils.clip_grad_norm_(ad_ps, clip) if ad_ps else torch.zeros((), device=dev)
+        return (gn_m.float().square()+gn_a.float().square()).sqrt()
+    return torch.nn.utils.clip_grad_norm_(net.parameters(), clip)
+
+
 def gathered(net, opt, temp, of, ok, rel_probe=None, rel_popt=None, clip=1.):
-    """--accum: the step is taken on the mean of the gradients of `of` windows in a row (each clipped as a step's own is;
-    one that was not finite, or held as a spike, is left out), so a card that holds an eighth of the plants of a batch
-    steps as one that holds them all. The sum waits in temp['acc']; it is not in last.pt (a resumed run starts a new one).
-    Returns whether opt.step() was called."""
+    """--accum: accumulate UNCLIPPED finite/spike-checked gradients across `of` windows, average them, and run
+    `clip_grad_norm_` ONCE right before `opt.step()` (and `rel_popt.step()`). On CUDA, keeps the accumulation
+    buffer on CPU (saving 524 MB VRAM during backward). Always resets `temp['acc']` to `dict(g=None, n=0, k=0)`
+    at cycle boundaries. Returns whether `opt.step()` was called."""
     acc = temp.setdefault('acc', dict(g=None, n=0, k=0))
     ps = [q for q in net.parameters() if q.requires_grad]
     rps = [q for q in rel_probe.parameters() if q.requires_grad] if (rel_probe is not None and rel_popt is not None) else []
+    offload = bool(ps and ps[0].is_cuda)
     if ok:
-        gs = [torch.zeros_like(q) if q.grad is None else q.grad.detach().clone() for q in ps]
-        acc['g'] = gs if acc['g'] is None else [x.add_(y) for x, y in zip(acc['g'], gs)]
+        if acc['g'] is None:
+            acc['g'] = [None if q.grad is None else (q.grad.detach().cpu() if offload else q.grad.detach().clone()) for q in ps]
+        else:
+            for i, q in enumerate(ps):
+                if q.grad is not None:
+                    g = q.grad.detach().cpu() if offload else q.grad.detach()
+                    if acc['g'][i] is None:
+                        acc['g'][i] = g if offload else g.clone()
+                    else:
+                        acc['g'][i].add_(g)
         if rps:
-            torch.nn.utils.clip_grad_norm_(rps, clip)
-            rgs = [torch.zeros_like(q) if q.grad is None else q.grad.detach().clone() for q in rps]
             rg = acc.get('rg')
-            acc['rg'] = rgs if rg is None else [x.add_(y) for x, y in zip(rg, rgs)]
+            if rg is None:
+                acc['rg'] = [None if q.grad is None else q.grad.detach().clone() for q in rps]
+            else:
+                for i, q in enumerate(rps):
+                    if q.grad is not None:
+                        if rg[i] is None:
+                            rg[i] = q.grad.detach().clone()
+                        else:
+                            rg[i].add_(q.grad.detach())
         acc['n'] += 1
     acc['k'] += 1
     stepped = False
     if acc['k'] >= of:
         if acc['n']:
             for q, g in zip(ps, acc['g']):
-                q.grad = g.div_(acc['n'])
-            opt.step()
+                q.grad = None if g is None else (g.to(q.device, non_blocking=True) if offload else g).div_(acc['n'])
+            gn_acc = _clip_actor_grads(net, opt, clip)
+            if bool(torch.isfinite(gn_acc)):
+                opt.step()
+                stepped = True
             rg = acc.get('rg')
-            if rps and rg is not None:
+            if stepped and rps and rg is not None:
                 for q, g in zip(rps, rg):
-                    q.grad = g.div_(acc['n'])
-                rel_popt.step()
-            stepped = True
+                    q.grad = None if g is None else g.div_(acc['n'])
+                if bool(torch.isfinite(torch.nn.utils.clip_grad_norm_(rps, clip))):
+                    rel_popt.step()
         acc.pop('rg', None)
         acc.update(g=None, n=0, k=0)
+    elif offload:
+        opt.zero_grad(set_to_none=True)
     return stepped
 
 
@@ -1076,6 +1469,7 @@ def update(net, critic, opt, copt, lane, a, w, gen, temp):
     for q in critic.parameters():                                 # the actor's objective passes through the critic, not into it
         q.requires_grad_(False)                                   # (until after the backward pass: --lean runs the critic again there)
     rel_probe, rel_popt = temp.get('rel_probe'), temp.get('rel_popt')
+    accum = int(getattr(a, 'accum', 1) or 1)
     stepped = False
     try:
         loss, rec, guard, log = window(net, critic, lane, a, w, gen, temp['usual'], rel_probe=rel_probe)
@@ -1085,15 +1479,10 @@ def update(net, critic, opt, copt, lane, a, w, gen, temp):
         ok = bool(torch.isfinite(loss))
         if ok:
             loss.backward()
+            if hasattr(net, 'settle_rooms'):
+                net.settle_rooms()
             log.update(parts(net))
-            if isinstance(opt, MuonAdamW):
-                mu_ps = [p for g in opt.param_groups if g.get('kind') == 'muon' for p in g['params'] if p.grad is not None]
-                ad_ps = [p for g in opt.param_groups if g.get('kind') != 'muon' for p in g['params'] if p.grad is not None]
-                gn_m = torch.nn.utils.clip_grad_norm_(mu_ps, a.clip) if mu_ps else loss.new_zeros(())
-                gn_a = torch.nn.utils.clip_grad_norm_(ad_ps, a.clip) if ad_ps else loss.new_zeros(())
-                gn = (gn_m.float().square()+gn_a.float().square()).sqrt()
-            else:
-                gn = torch.nn.utils.clip_grad_norm_(net.parameters(), a.clip)
+            gn = _clip_actor_grads(net, opt, a.clip) if accum <= 1 else _actor_grad_norm(net)
             ok = bool(torch.isfinite(gn))                         # a gradient that is not finite is dropped, never stepped on
             if ok:
                 if w['sim'] > 0 and guard.median() is not None:
@@ -1110,15 +1499,17 @@ def update(net, critic, opt, copt, lane, a, w, gen, temp):
                     past.append(min(float(gn), spike*mid) if far else float(gn))
                     del past[:-32]
                 log['gn' if ok else 'far'] = float(gn)            # gn: of the steps taken; far: of one that was not
-            if ok and getattr(a, 'accum', 1) <= 1:
+            if ok and accum <= 1:
                 opt.step()
                 if rel_popt is not None:
                     torch.nn.utils.clip_grad_norm_(rel_probe.parameters(), a.clip)
                     rel_popt.step()
                 stepped = True
-        if getattr(a, 'accum', 1) > 1:
-            stepped = gathered(net, opt, temp, a.accum, ok, rel_probe=rel_probe, rel_popt=rel_popt, clip=a.clip)
+        if accum > 1:
+            stepped = gathered(net, opt, temp, accum, ok, rel_probe=rel_probe, rel_popt=rel_popt, clip=a.clip)
     finally:
+        if hasattr(net, 'settle_rooms'):
+            net.settle_rooms()
         for q in critic.parameters():
             q.requires_grad_(True)
     log['updates'] = 1 if stepped else 0
@@ -1134,7 +1525,18 @@ def update(net, critic, opt, copt, lane, a, w, gen, temp):
     adapt(lane, guard, a)
     if 'before_fit' in temp:                                      # (--bench: the window's peak apart from the fit's)
         temp['before_fit']()
-    log.update(fit_critic(critic, copt, lane, rec, a))
+    if accum <= 1:
+        log.update(fit_critic(critic, copt, lane, rec, a))
+    else:
+        acc = temp['acc']
+        items = _critic_items(critic, lane, rec, a)
+        if acc['k'] == 0:                                         # end of accum cycle: pop buffered critic batches and step ONLY if actor stepped
+            buf = acc.pop('_crit', [])
+            buf.extend(items)
+            if stepped and buf:
+                log.update(fit_to_multi(critic, copt, buf, a))
+        elif items:
+            acc.setdefault('_crit', []).extend(items)
     return log
 
 
@@ -1275,10 +1677,18 @@ def menu_kw(items, nseg=0, always=False):
             assert len(shape[q]) == 2, f'--menu: {q} takes lo,hi'
         elif q == 'stock':                                        # share of the plants with a conserving train of vessels (prior.STOCK)
             shape[q] = float(v)
+        elif q == 'cls_p':                                        # 3-tuple probabilities for dead-time class (0, 1, 2)
+            ps = tuple(float(x) for x in v.split(','))
+            assert len(ps) == 3 and all(x >= 0 for x in ps) and sum(ps) > 0, '--menu: cls_p takes 3 non-negative probabilities'
+            shape[q] = ps
+        elif q in ('sep_p', 'integ_p'):                           # smooth prior overrides for separation arch & integrating levels
+            pv = float(v)
+            assert 0. <= pv <= 1., f'--menu: {q} must be in [0, 1]'
+            shape[q] = pv
         elif q == 'blind':
             kw['blind'] = bool(int(v))
         else:
-            assert q in PR.Menu._fields, f'--menu: {q} is not one of {PR.Menu._fields+SHAPE+("blind",)}'
+            assert q in PR.Menu._fields, f'--menu: {q} is not one of {PR.Menu._fields+SHAPE+("stock", "cls_p", "sep_p", "integ_p", "blind")}'
             menu[q] = tuple(x for x in v.split(',') if x) if q == 'drop' else tuple(float(x) for x in v.split(',')) if q == 'rate' else float(v)
     assert 'rate' not in menu or len(menu['rate']) == 5, '--menu: rate takes five shares'
     if menu:
@@ -1372,13 +1782,18 @@ def mech_of(share, chance, groups, seed, v=None):
     return share, groups[g][1], g
 
 
-def drawn(n, seed, dev='cpu', gen='cpu', names=None, envs=None, **kw):
+def drawn(n, seed, dev='cpu', gen='cpu', names=None, envs=None, plant_seed=None, event_seed=None, **kw):
     """aio.sim.core.build; names: the kinds its mechanistic plants are of (`mech_of`; they are built in the process
     that draws the batch: a builder is given the names); envs: its plants, in place of n (--sizes: a batch of
-    another size has as many of them as gives it about as many pairs)."""
+    another size has as many of them as gives it about as many pairs). plant_seed/event_seed: mined hard plant
+    dynamics paired with fresh event/noise schedules when Track A's `event_seed` is available."""
     if names:
         from aio.sim import mech as ME
         kw['plants'] = ME.pool(list(names))
+    if plant_seed is not None:
+        if event_seed is not None and _supports_event_seed():
+            kw['event_seed'] = event_seed
+        seed = plant_seed
     return C.build(envs or n, seed, dev, gen, **kw)
 
 
@@ -1429,8 +1844,16 @@ def per_pairs(x, name):
 def chunk_of(a, lane):
     """--fit-chunk for a lane: the episodes of its size that are as many pairs (0: all at once). To the critic an
     episode of 48x20 is sixteen of the default size: a chunk counted in episodes was all of such a batch in one graph,
-    and what `imitate` fits the critic on was all of it instead of a sixth."""
-    return per_pairs(a.fit_chunk, lane.size) if a.fit_chunk else 0
+    and what `imitate` fits the critic on was all of it instead of a sixth. With --priv-critic (small non-recurrent
+    Markov critic), default to full batch unless explicitly overridden to a smaller value."""
+    if not a.fit_chunk:
+        return 0
+    if getattr(a, 'priv_critic', False):
+        n = getattr(getattr(lane, 'prog', None), 'n', 0)
+        if n and a.fit_chunk >= n:
+            return 0
+        return a.fit_chunk if getattr(a, '_fit_chunk_explicit', False) or (n and a.fit_chunk < n) else 0
+    return per_pairs(a.fit_chunk, lane.size)
 
 
 def sizes_of(items, envs):
@@ -1508,16 +1931,259 @@ class Average:
     the average of the iterates does not. It is what is validated and kept as `model`; the steps go on from
     the weights as stepped (`raw` in a checkpoint). Called by the optimizer after every step."""
 
-    def __init__(self, net, d, n=0):
+    def __init__(self, net, d, n=0, device=None):
         self.net, self.d, self.n = net, d, n
         self.avg = copy.deepcopy(net).requires_grad_(False)
+        self.device = torch.device(device) if device is not None else next(net.parameters()).device
+        if next(self.avg.parameters()).device != self.device:
+            self.avg.to(self.device)
 
     @torch.no_grad()
-    def __call__(self, *_):
+    def update(self, *_):
         d = min(self.d, (1+self.n)/(10+self.n))
         self.n += 1
-        for p, q in zip(self.avg.parameters(), self.net.parameters()):
-            p.lerp_(q, 1-d)
+        w = 1.-d
+        avg_ps = list(self.avg.parameters())
+        net_ps = list(self.net.parameters())
+        if avg_ps and avg_ps[0].device == net_ps[0].device:
+            torch._foreach_lerp_(avg_ps, net_ps, w)
+        else:
+            for p, q in zip(avg_ps, net_ps):
+                p.lerp_(q.detach().to(p.device), w)
+
+    __call__ = update
+
+
+class HardSeeds:
+    """Mined hard plant seeds (--hard-seeds PATH, --hard-share P) with hot-reload on file mtime.
+    Mixes mined `plant_seed`s with fresh `event_seed`s into non-plain 12x5 batches while preserving exact
+    uniform anchor ratios alongside `--menu-mix`."""
+
+    def __init__(self, path=None, share=0.):
+        self.path = Path(path) if path else None
+        self.share = float(share or 0.)
+        self._mtime = -1.
+        self.seeds = []
+        self._idx = 0
+        self.reload()
+
+    @property
+    def active(self):
+        return self.path is not None and self.share > 0.
+
+    def reload(self):
+        if self.path is None or not self.path.exists():
+            return self.seeds
+        try:
+            mt = self.path.stat().st_mtime
+            if mt != self._mtime:
+                data = json.loads(self.path.read_text(encoding='utf-8'))
+                raw = data.get('seeds', []) if isinstance(data, dict) else data
+                parsed = [int(x) for x in raw]
+                if parsed:
+                    self.seeds = parsed
+                    self._mtime = mt
+                    self._idx = self._idx % len(self.seeds)
+        except (OSError, ValueError, TypeError):
+            pass
+        return self.seeds
+
+    def pick(self, batch_seed, plain=False, is_default_size=True, menu_active=False, p_menu=0.):
+        """Return a mined `plant_seed` or None. Never touches `--plain` anchor lanes, non-12x5 sizes, or batches
+        already claimed by `--menu-mix`; scales conditional probability by `1 / (1 - p_menu)` so the marginal
+        fractions (uniform anchor, parametric menu-mix, mined hard-seeds) match the configured shares exactly."""
+        if plain or not is_default_size or self.share <= 0. or menu_active:
+            return None
+        self.reload()
+        if not self.seeds:
+            return None
+        cond_p = min(1., self.share/max(1.-p_menu, 1e-6))
+        if random.Random(f'hard-seeds {batch_seed}').random() >= cond_p:
+            return None
+        ps = self.seeds[self._idx % len(self.seeds)]
+        self._idx += 1
+        return ps
+
+
+def pack_delta_int8(t, g=128):
+    """Blockwise symmetric INT8 quantization (group size `g=128`, FP16 per-block scale) for MuLoCo pseudo-gradients."""
+    x = t.detach().float().cpu().reshape(-1)
+    numel = x.numel()
+    pad = (-numel) % g
+    if pad:
+        x = torch.nn.functional.pad(x, (0, pad))
+    x = x.view(-1, g)
+    s = x.abs().amax(-1).clamp_min(1e-8).to(torch.float16)
+    q = (x/s.float()[:, None]*127.0).round().clamp(-127, 127).to(torch.int8)
+    return dict(q=q, s=s, shape=tuple(t.shape), numel=numel, g=g)
+
+
+def unpack_delta_int8(item):
+    """Inverse of `pack_delta_int8` -> FP32 tensor of original shape."""
+    q, s = item['q'], item['s']
+    return (q.float()*(s.float()[:, None]/127.0)).reshape(-1)[:item['numel']].reshape(item['shape'])
+
+
+def pack_actor_delta(anchor, current, compress='int8', g=128):
+    """Compute pseudo-gradient `delta = anchor - current`, its L2 norm, finiteness flag, and packed transport dict."""
+    packed, sq = {}, 0.
+    finite = True
+    for k, a_t in anchor.items():
+        if k not in current or not a_t.is_floating_point():
+            continue
+        d = a_t.detach().float().cpu()-current[k].detach().float().cpu()
+        if not bool(torch.isfinite(d).all()):
+            finite = False
+        sq += float(d.square().sum())
+        if compress == 'int8':
+            packed[k] = pack_delta_int8(d, g=g)
+        else:
+            packed[k] = d.to(torch.bfloat16) if d.ndim >= 2 else d.to(torch.float32)
+    norm = math.sqrt(sq) if math.isfinite(sq) else float('inf')
+    return packed, norm, finite and math.isfinite(norm)
+
+
+def unpack_actor_delta(packed):
+    """Decode a packed actor delta dict (`int8` dicts or `bf16`/`fp32` tensors) into FP32 tensors."""
+    return {k: (unpack_delta_int8(v) if isinstance(v, dict) else v.detach().float().cpu()) for k, v in packed.items()}
+
+
+class DiLoCoClient:
+    """Elastic Equal-H MuLoCo worker client (--diloco-hub URL, --diloco-h H).
+    Syncs pseudo-gradients `anchor - current` at exact row boundaries once `updates_since_sync >= H`, keeps
+    local `MuonAdamW` and `PrivCritic` optimizer states intact, applies Hub-broadcast `inner_lr` and merged
+    weights, and degrades gracefully to local training on any Hub network/timeout failure."""
+
+    def __init__(self, hub_url, H, worker='', compress='int8', timeout=180., round_idx=0, hub_lr=None):
+        self.hub_url = hub_url.rstrip('/')
+        self.H = max(1, int(H))
+        self.worker = worker or socket.gethostname()
+        self.compress = compress
+        self.timeout = float(timeout)
+        self.round = int(round_idx)
+        self.hub_lr = None if hub_lr is None else float(hub_lr)
+        self.updates_since_sync = 0
+        self.env_steps_since_sync = 0
+        self.anchor = None
+
+    def snapshot_anchor(self, net):
+        self.anchor = {k: v.detach().float().cpu().clone() for k, v in net.actor.state_dict().items() if v.is_floating_point()}
+
+    def record(self, updates, env_steps):
+        self.updates_since_sync += int(updates)
+        self.env_steps_since_sync += int(env_steps)
+
+    def state_meta(self):
+        return dict(round=self.round, hub_lr=self.hub_lr, worker=self.worker, H=self.H)
+
+    def maybe_sync(self, net, critic, rel_probe=None, force=False):
+        """Sync with Hub if `updates_since_sync >= H` (or `force=True`). Returns summary dict or None."""
+        if self.anchor is None:
+            self.snapshot_anchor(net)
+        if not force and self.updates_since_sync < self.H:
+            return None
+        min_steps = int(.7*self.H)
+        if self.updates_since_sync < min_steps:
+            return dict(skipped='min_steps', steps=self.updates_since_sync, min_steps=min_steps)
+        packed, norm, ok = pack_actor_delta(self.anchor, net.actor.state_dict(), compress=self.compress)
+        if not ok:
+            msg = dict(diloco_warn='non_finite_delta', worker=self.worker, round=self.round, steps=self.updates_since_sync)
+            print(dumps(msg), file=sys.stderr, flush=True)
+            if all(bool(torch.isfinite(v).all()) for v in net.actor.state_dict().values()):
+                self.snapshot_anchor(net)
+                self.updates_since_sync = 0
+                self.env_steps_since_sync = 0
+            return dict(skipped='non_finite', norm=None)
+        req_dict = dict(
+            worker=self.worker,
+            round=self.round,
+            steps=self.updates_since_sync,
+            env_steps=self.env_steps_since_sync,
+            compress=self.compress,
+            actor_delta=packed,
+            critic={k: v.detach().float().cpu() for k, v in critic.state_dict().items()} if critic is not None else None,
+            rel_probe={k: v.detach().float().cpu() for k, v in rel_probe.state_dict().items()} if rel_probe is not None else None,
+            norm=norm,
+        )
+        buf = io.BytesIO()
+        torch.save(req_dict, buf)
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(f'{self.hub_url}/sync', data=buf.getvalue(),
+                                         headers={'Content-Type': 'application/octet-stream'}, method='POST')
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw_resp = resp.read()
+            reply = safe_torch_load(io.BytesIO(raw_resp), map_location='cpu')
+        except Exception as exc:
+            msg = dict(diloco_warn='hub_unreachable', worker=self.worker, round=self.round, error=repr(exc))
+            print(dumps(msg), file=sys.stderr, flush=True)
+            return dict(error=repr(exc), accepted=False, round=self.round)
+        sync_s = round(time.time()-t0, 2)
+        if reply.get('actor') is not None:
+            net.actor.load_state_dict(reply['actor'])
+            for m in net.modules():
+                getattr(m, 'forget', lambda: None)()
+        if reply.get('critic') is not None and critic is not None:
+            critic.load_state_dict(reply['critic'])
+        if reply.get('rel_probe') is not None and rel_probe is not None:
+            rel_probe.load_state_dict(reply['rel_probe'])
+        if reply.get('inner_lr') is not None:
+            self.hub_lr = float(reply['inner_lr'])
+        self.round = int(reply.get('round', self.round+1))
+        steps_sent, env_sent = self.updates_since_sync, self.env_steps_since_sync
+        self.updates_since_sync = 0
+        self.env_steps_since_sync = 0
+        self.snapshot_anchor(net)
+        return dict(round=self.round, global_steps=reply.get('global_steps'), inner_lr=self.hub_lr,
+                    accepted=bool(reply.get('accepted', True)), norm=round(norm, 4), steps=steps_sent,
+                    env_steps=env_sent, sync_s=sync_s)
+
+
+_RESUME_RESTORE_KEYS = (
+    'ema', 'wd', 'muon_mom', 'beta2', 'rel_id_coef', 'unpaired',
+    'meter', 'stops', 'fixed', 'heads', 'priv_critic', 'opt',
+    'bias_lr_mult', 'knots', 'cosine_by', 'total_updates', 'total_samples',
+    'focal_alpha', 'bc_iters', 'bc_floor', 'bc_hold', 'id_coef',
+    'pre_cost', 'rev_smooth', 'smooth', 'floor', 'window_min', 'value', 'value_warm',
+    'lanes', 'window', 'sim_window', 'replay', 'batch', 'batch_min', 'keep',
+    'stay', 'after', 'after_by', 'cost_w', 'log_w', 'noise', 'faults', 'probe',
+    'known', 'critic_known', 'gamma', 'lam', 'tau', 'fail_cost',
+    'critic_lr', 'critic_iters', 'warm_steps', 'warmup', 'clip',
+    'mech', 'mech_groups', 'mech_batches', 'menu', 'menu_mix', 'nseg',
+    'builders', 'builder_threads', 'val_raw',
+)
+
+
+def restore_resume_config(a, ck, explicit=()):
+    """Auto-restore structural & optimizer config from `ck['config']` / `pairs['seq']` on `--resume` unless explicitly overridden."""
+    explicit = set(explicit or ())
+    cfg = ck.get('config') or {}
+    pairs = (ck.get('model') or {}).get('pairs') or {}
+    if 'seq' in pairs or cfg.get('seq'):
+        if 'seq' in pairs:
+            from aio import seqnet as SQ
+            asked, w = SQ.of_buffer(pairs['seq'])
+            if 'seq' not in explicit:
+                a.seq = asked
+            if 'seq_window' not in explicit:
+                a.seq_window = int(w)
+        else:
+            if 'seq' not in explicit:
+                a.seq = cfg['seq']
+            if 'seq_window' not in explicit and 'seq_window' in cfg:
+                a.seq_window = int(cfg['seq_window'])
+        if 'replay' not in explicit and cfg.get('replay'):
+            a.replay = cfg['replay']
+        if 'seq_ckpt' not in explicit and 'seq_ckpt' in cfg:
+            a.seq_ckpt = bool(cfg['seq_ckpt'])
+    for k in _RESUME_RESTORE_KEYS:
+        if k in explicit:
+            continue
+        if k in ('cosine_by', 'total_updates', 'total_samples') and k in ck and ck[k] is not None:
+            setattr(a, k, ck[k])
+        elif k in cfg and cfg[k] is not None:
+            setattr(a, k, cfg[k])
+    return a
 
 
 LAW = ('head', 'gain', 'valve', 'law', 'hbias', 'headf', 'k_own', 'k_cross', 'head_lin', 'head_mech')   # --law, in the rows: the errors of the readouts of E, K and V (as they are read) and of their product (asinh of the
@@ -1796,10 +2462,11 @@ def imitate(net, critic, opt, copt, lane, buf, a, gen, designs=None):
 def advance(net, critic, lane, steps, gen, noise, drive_noise=0.):
     """Run a lane on without learning (the lanes start at different points of their episodes)."""
     prog = lane.prog
+    adv_tag = (lane.tag, lane.age, 'adv', lane.k)
     for k in range(lane.k, min(lane.k+steps, HORIZON)):
         obs, s = canonical(C.observe(prog, lane.st, k).float(), lane.unpaired)
         F, lane.hs = sums(net, obs, lane.hs)
-        u, mean, mask, _, lane.ha, true = decide(net, lane, obs, lane.prev, lane.ha, s, k, gen, noise, feats=F)
+        u, mean, mask, _, lane.ha, true = decide(net, lane, obs, lane.prev, lane.ha, s, k, gen, noise, feats=F, need_read=False, lane_tag=adv_tag)
         if lane.drive is not None:
             u = driven(lane, lane.st, k, s, mask, u, drive_noise, gen)[1]
         if lane.lead is not None:
@@ -2013,21 +2680,21 @@ def read_exams(exams, net, per=None):
 class Watch:
     """A controller with its moves watched: `move`, their mean size (share of the slew limit a decision), and
     `flip`, the share of an MV's decisions on which its move turns back on the last one (chatter; a teacher
-    that knows the plant 0.05, the formula PI 0.24)."""
+    that knows the plant 0.05, the formula PI 0.24). Accumulated on GPU/device with a single sync in `stats()`."""
 
     def __init__(self, ctl):
         self.ctl = ctl
 
     def reset(self, prog):
         self.ctl.reset(prog)
-        self.n = self.size = self.turn = 0.
+        self.n = self.size = self.turn = None
         self.last = None
 
     def resume(self, prog):
         """The next window on the same plants (aio.sim.control.rollout keeps the memory of a controller that has this):
         the controller goes on as it does, the moves are counted anew."""
         (self.ctl.resume if hasattr(self.ctl, 'resume') else self.ctl.reset)(prog)
-        self.n = self.size = self.turn = 0.
+        self.n = self.size = self.turn = None
         self.last = None
 
     def restart(self, again):
@@ -2037,14 +2704,23 @@ class Watch:
     def __call__(self, prog, st, k, obs):
         a = self.ctl(prog, st, k, obs)
         m = (prog.c['mvm'] > 0) & (k >= prog.k_first)[:, None]
-        self.n, self.size = self.n+float(m.sum()), self.size+float((a.abs()*m).sum())
+        n = m.sum().double()
+        sz = (a.abs()*m).sum().double()
+        if self.n is None:
+            self.n, self.size, self.turn = n, sz, torch.zeros((), dtype=torch.float64, device=a.device)
+        else:
+            self.n = self.n+n
+            self.size = self.size+sz
         if self.last is not None:
-            self.turn += float(((a*self.last < 0) & (a.abs() > 1e-3) & (self.last.abs() > 1e-3) & m).sum())
+            self.turn = self.turn+((a*self.last < 0) & (a.abs() > 1e-3) & (self.last.abs() > 1e-3) & m).sum().double()
         self.last = a
         return a
 
     def stats(self):
-        return dict(move=round(self.size/max(self.n, 1.), 4), flip=round(self.turn/max(self.n, 1.), 4))
+        if self.n is None:
+            return dict(move=0.0, flip=0.0)
+        n, sz, tr = torch.stack((self.n, self.size, self.turn)).tolist()
+        return dict(move=round(sz/max(n, 1.), 4), flip=round(tr/max(n, 1.), 4))
 
 
 def forget(*nets):
@@ -2058,7 +2734,7 @@ def forget(*nets):
 
 
 @torch.no_grad()
-def validate(net, prog, ref, scale, known=True, paired=True):
+def validate(net, prog, ref, scale, known=True, paired=True, return_rollout=False):
     """The network on a batch beside its references `ref` (run where the network is). The batch may be kept on the CPU:
     it is on the network's device for the reading (`visit`)."""
     net.eval()
@@ -2091,7 +2767,7 @@ def validate(net, prog, ref, scale, known=True, paired=True):
             out['pts_'+q] = SC.points(*([x for x, k in zip(v, lev) if k == yes] for v in (sc, scale.hold, scale.best)))
     out['n_level'] = sum(lev)
     alive(validation=prog.n)
-    return out
+    return (out, r) if return_rollout else out
 
 
 def ref_table(prog, ref, scale):
@@ -2113,14 +2789,12 @@ def cached_refs(cache, key, prog, meter=False):
     dev = prog.device
     path = (Path(cache)/f'{key}.pt') if cache else None
     if path is not None and path.exists():
-        raw = torch.load(path, map_location='cpu', weights_only=False)
+        raw = safe_torch_load(path, map_location='cpu')
         return {q: {k: v.to(dev) for k, v in r.items()} for q, r in raw.items()}
     ref = references(prog, meter)
     if path is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix('.tmp')
-        torch.save({q: {k: r[k].detach().cpu() for k in _REF_KEEP if k in r} for q, r in ref.items()}, tmp)
-        tmp.replace(path)
+        atomic_save({q: {k: r[k].detach().cpu() for k in _REF_KEEP if k in r} for q, r in ref.items()}, path)
     return ref
 
 
@@ -2144,24 +2818,38 @@ def read_sizes(vsizes, net):
 
 
 def score(a, dev):
-    """--score CKPT: no training. The checkpoint's `model` on the batch asked for (--val-n, --val-seed, --val-mech;
-    --refs for its Oracle file) beside the references run there: how it does on plants of another kind or
-    another draw than its run validates on. One JSON line; `lin` and `mech` are the points on the episodes
-    of the prior and of the engine alone (each on its own 0 and 100); `before` and `after`, on the parts of the
-    scored window up to an episode's first process change and from it on (`before_after`)."""
+    """--score CKPT: no training. Evaluates the checkpoint's `model` (and optional `raw` with --val-raw) using
+    `cached_refs`, `validate`, and `read_sizes` so the output matches in-loop `metrics.jsonl` schema identically
+    while preserving legacy `all`/`lin`/`mech`/`score`/`before`/`after` fields and `--per`."""
     net, ck = N.load(a.score, dev)
+    cfg = ck.get('config') or {}
+    meter = bool(getattr(a, 'meter', False) or cfg.get('meter', False))
+    net.meter = meter
+    is_seq = 'seq' in ((ck.get('model') or {}).get('pairs') or {})
+    known = (not getattr(a, 'no_known_val', False)) and not is_seq
     prog = C.build(a.val_n, a.val_seed, dev, 'cpu', mech=a.val_mech)
-    ref = references(prog)
+    ref = cached_refs(getattr(a, 'val_cache', None), f'val-n{a.val_n}-s{a.val_seed}-m{a.val_mech}-mt{int(bool(meter))}', prog, meter)
     scale, used = scale_of(ref, a.refs)
+    v, model = validate(net, prog, ref, scale, known, return_rollout=True)
     run = {q: r['score'].tolist() for q, r in ref.items()}
-    model = CT.rollout(prog, N.Policy(net))
     run['model'] = model['score'].tolist()
     split = {q: {name: round(x['pts_'+q], 2) for name, x in ((name, before_after(r, ref)) for name, r in dict(ref, model=model).items())} for q in PARTS}
     part = lambda q, i: round(SC.points(run[q][i], scale.hold[i], scale.best[i]), 2)     # noqa: E731
     parts = dict(all=slice(None), lin=slice(0, prog.nl), mech=slice(prog.nl, None))
-    out = dict(ckpt=str(a.score), iter=ck.get('iter'), hours=ck.get('hours'), val_n=a.val_n, val_seed=a.val_seed, val_mech=a.val_mech, mech_n=prog.n-prog.nl,
-               refs_used=used, scale=scale.meta(), score={q: round(sum(v)/len(v), 2) for q, v in run.items()}, **split,
+    out = dict(ckpt=str(a.score), iter=ck.get('iter'), hours=ck.get('hours'), updates=ck.get('updates'), samples=ck.get('samples'),
+               val_n=a.val_n, val_seed=a.val_seed, val_mech=a.val_mech, mech_n=prog.n-prog.nl,
+               refs_used=used, scale=scale.meta(), val={q: round(x, 4) for q, x in v.items()}, val_refs=ref_table(prog, ref, scale),
+               score={q: round(sum(v_s)/len(v_s), 2) for q, v_s in run.items()}, **split,
                **{k: {q: part(q, i) for q in run} for k, i in parts.items() if len(run['model'][i])})
+    if getattr(a, 'val_raw', False) and 'raw' in ck:
+        raw_net = N.of_state(ck['raw']['actor'], ck['raw'].get('pairs'), cfg, dev)
+        raw_net.meter = meter
+        vr = validate(raw_net, prog, ref, scale, False)
+        out['raw'] = {q: round(x, 4) for q, x in vr.items()}
+    if getattr(a, 'val_sizes', None):
+        vsizes = size_vals(a.val_sizes, a.val_seed, dev, meter, getattr(a, 'val_cache', None))
+        out['val_sizes'] = read_sizes(vsizes, net)
+        out['val_size_refs'] = {q: ref_table(*vs) for q, vs in vsizes.items()}
     per, stays = {} if a.per else None, {}
     if a.val_stay > 1:                                            # what staying on a unit is worth to these weights (`Stay`)
         stays['stay'] = stay = Stay(a.val_stay_n, a.val_seed+1, a.val_stay, dev, nseg=a.val_nseg)
@@ -2325,9 +3013,9 @@ def optimizer(net, a):
         groups = [dict(params=dec, weight_decay=a.wd, lr_mult=1.), dict(params=rest, weight_decay=0., lr_mult=1.)]
         if rbias:
             groups.append(dict(params=rbias, weight_decay=0., lr=a.lr*bmult, lr_mult=bmult))
-        opt = torch.optim.AdamW(groups, lr=a.lr, betas=(.9, a.beta2))
+        opt = torch.optim.AdamW(groups, lr=a.lr, betas=(.9, a.beta2), **_fused_kw(net))
     else:
-        opt = torch.optim.Adam(net.parameters(), lr=a.lr)
+        opt = torch.optim.Adam(net.parameters(), lr=a.lr, **_fused_kw(net))
     if getattr(a, 'warm_steps', 0) > 0:
         opt.warm_n = 0
 
@@ -2341,7 +3029,9 @@ def optimizer(net, a):
 
 
 def lr_factor(hours, of):
-    """The share of --lr at this many hours of a run of `of` hours: down to a tenth along a cosine."""
+    """The share of --lr at this progress along a schedule of `of` units: down to a tenth along a cosine."""
+    if of <= 0:
+        return 1.
     return .1+.45*(1+math.cos(math.pi*min(1., hours/of)))
 
 
@@ -2749,6 +3439,7 @@ def main():
     ap.add_argument('--val-exams-refs', type=Path, default=None, help='a directory the references of the exams are kept in (run once per exam, size and device)')
     ap.add_argument('--ema', type=float, default=0., help='the actor\'s weights averaged over its steps with this decay (.999: the last 1,000 steps) '
                     'are what is validated and kept (0: the weights as stepped)')
+    ap.add_argument('--ema-device', choices=('cuda', 'cpu'), default='cuda', help='device for EMA weights (cpu saves 524 MB VRAM on local GPUs)')
     ap.add_argument('--val-raw', action='store_true', help='with --ema: the weights as stepped are validated too (`raw` in a row)')
     ap.add_argument('--sim-window', type=int, default=0, help='the window once the simulator gradient is in the objective (0: --window). '
                     'Imitation needs no long one; the simulator gradient of a short one misses what the moves cost later')
@@ -2777,9 +3468,25 @@ def main():
     ap.add_argument('--row', type=int, default=0, help='windows per row of metrics.jsonl (0: one episode\'s worth)')
     ap.add_argument('--rows', type=int, default=10**9)
     ap.add_argument('--hours', type=float, default=2.)
-    ap.add_argument('--eval-every', type=int, default=5, help='rows between validations')
-    ap.add_argument('--save-every', type=int, default=0, help='of the rows validated, every one whose number is a multiple of this keeps its checkpoint as rowN.pt beside last.pt, '
-                    'and so does the row the run ends on (0: last.pt and best.pt alone). What a run was at a row can be read later on any batch only from its weights then')
+    ap.add_argument('--cosine-by', choices=('hours', 'updates', 'samples'), default='hours', help='progress unit for cosine LR decay (default: hours; updates/samples for cross-GPU parity)')
+    ap.add_argument('--total-updates', type=int, default=0, help='target total optimizer updates when --cosine-by updates')
+    ap.add_argument('--total-samples', type=int, default=0, help='target total env samples when --cosine-by samples')
+    ap.add_argument('--eval-every', type=int, default=5, help='rows between validations (0: disable all in-loop/start/end validation for zero-CU async eval)')
+    ap.add_argument('--eval-snap-every', type=int, default=0, help='rows between lightweight atomic BF16+FP32-1D eval snapshots in OUT/eval/rowN.pt (0: off)')
+    ap.add_argument('--keep-eval-snaps', type=int, default=6, help='with --eval-snap-every: keep at most this many newest OUT/eval/rowN.pt snapshots (0: keep all)')
+    ap.add_argument('--eval-snap-raw', action='store_true', help='with --eval-snap-every and --ema: also pack raw actor weights in eval snapshots')
+    ap.add_argument('--focal-alpha', type=float, default=0., help='bounded online focal weighting exponent on episode sim loss (0: uniform; e.g. 0.5)')
+    ap.add_argument('--hard-seeds', type=Path, default=None, help='JSON file of mined hard plant batch seeds ({"seeds": [...]}) for --hard-share mixing into 12x5 batches')
+    ap.add_argument('--hard-share', type=float, default=0., help='share of non-plain 12x5 batches drawn from --hard-seeds with fresh event_seeds (0: off)')
+    ap.add_argument('--diloco-hub', default='', help='Elastic MuLoCo Hub base URL (e.g. http://100.79.108.0:8765); empty disables distributed sync')
+    ap.add_argument('--diloco-h', type=int, default=32, help='inner optimizer updates between MuLoCo Hub syncs (at exact row boundaries)')
+    ap.add_argument('--diloco-worker', default='', help='worker identifier sent to --diloco-hub (default: OUT dir name or hostname)')
+    ap.add_argument('--diloco-compress', choices=('int8', 'bf16'), default='int8', help='pseudo-gradient compression for --diloco-hub')
+    ap.add_argument('--diloco-timeout', type=float, default=180., help='HTTP timeout in seconds for --diloco-hub /sync requests')
+    ap.add_argument('--quiet-hours', default='', help='local quiet window (HH:MM-HH:MM, e.g. 00:00-10:30 for guomao) during which training pauses at 0%% GPU and resumes automatically')
+    ap.add_argument('--quiet-tz', default='Asia/Shanghai', help='IANA timezone for --quiet-hours (default: Asia/Shanghai)')
+    ap.add_argument('--save-every', type=int, default=0, help='every row whose number is a multiple of this keeps its checkpoint as rowN.pt beside last.pt, '
+                    'and so does the row the run ends on (0: last.pt and best.pt alone; decoupled from --eval-every)')
     ap.add_argument('--keep-saves', type=int, default=0, help='with --save-every: keep at most this many newest rowN.pt snapshots (0: keep all; never deletes last.pt or best.pt)')
     ap.add_argument('--val-n', type=int, default=256)
     ap.add_argument('--val-seed', type=int, default=10**6)
@@ -2818,6 +3525,8 @@ def main():
                     'checkpoint and of every reference, with which plants have a level: for a reading by another rule than the rows\' (the reference '
                     'tables add a plant\'s windows up before the points are taken; the rows take each window\'s points)')
     a = ap.parse_args()
+    explicit = explicit_args(ap, sys.argv[1:])
+    a._fit_chunk_explicit = 'fit_chunk' in explicit
     assert a.stall > 0 or not a.restarts, '--restarts: with --stall'
     assert a.mech_groups_stay is None or (a.mech_groups and a.mech_groups_stay), '--mech-groups-stay: groups, beside --mech-groups (none there: --mech-batches-stay 0)'
     if a.restarts and not (a.bench or a.score or os.environ.get(KEPT)):       # the run is a child of this process, which watches it
@@ -2833,11 +3542,14 @@ def main():
     dev = torch.device(a.device)
     if dev.type == 'cuda' and os.environ.get('AIO_TF32', '1') != '0':
         torch.set_float32_matmul_precision('high')
+    expandable = _has_expandable_segments(a.card_alloc)
     a.card_gb = cap_card(dev, a.card_gb, a.card_alloc)                         # (run.json, the bench's line: the cap it ran under)
     assert a.seed >= 1 and a.val_seed < 2**32 and 1 <= a.window <= HORIZON and 0 <= a.sim_window <= HORIZON
     assert a.stay >= 1 and not (a.stay > 1 and a.life), '--stay: whole episodes (no --life)'
     windows = (a.window, a.sim_window or a.window)               # while the teacher is alone, and with the simulator gradient
     if a.bench:
+        if a.priv_critic and not a._fit_chunk_explicit:
+            a.fit_chunk = 0
         SIGN.update(stall=a.stall); alive()
         return bench_mix(a, dev) if a.sizes else bench(a, dev)
     if a.score:
@@ -2853,56 +3565,56 @@ def main():
     resumed = a.resume and last.exists()
     assert not (a.probe > 0 and a.bc_iters == 0 and not (resumed or a.init)), (
         '--probe: needs imitation (--bc-iters > 0) or weights that trained `when`; for pure real-cost self-probing use --probe 0 --pre-cost .25')
-    ck = torch.load(last if resumed else a.init, map_location=dev, weights_only=False) if resumed or a.init else None
+    ck = safe_torch_load(last if resumed else a.init, map_location='cpu') if resumed or a.init else None
     grown = False
     if resumed:                                                   # a run goes on with the network it has
+        restore_resume_config(a, ck, explicit)
+        windows = (a.window, a.sim_window or a.window)
         a.no_stats = not N.has_stats(ck['model']['pairs'])
-        a.reader = N.reader_of(ck['model']['pairs'])
-        a.law_path = ('labels' if N.apart_of(ck['model']['pairs']) else 'read') if N.law_of(ck['model']['pairs']) else None
-        had = (N.slow_of(ck['model']['pairs']), N.arx_of(ck['model']['pairs']), N.dv_of(ck['model']['pairs']))
-        seen = N.unseen_of(ck['model']['pairs'])                  # (and --unseen: its read-out, and the layer that gives it to E's at its zero start)
-        told = N.told_of(ck['model']['pairs'])                    # (and --told: the layer the share told comes in by, at its zero start)
-        grown = (bool(a.slow) and not had[0]) or (a.arx and not had[1]) or (a.dv and not had[2]) or (a.unseen and not seen) or (a.told and not told)   # but for the slow sums and the rows' own past: --slow, --arx add them (their layers start at zero: the same function), --dv widens the fits
-        a.slow, a.arx, a.dv = had[0] or a.slow, had[1] or a.arx, had[2] or a.dv
-        a.diff = N.diff_of(ck['model']['pairs'])
+        if not a.seq:
+            a.reader = N.reader_of(ck['model']['pairs'])
+            a.law_path = ('labels' if N.apart_of(ck['model']['pairs']) else 'read') if N.law_of(ck['model']['pairs']) else None
+            had = (N.slow_of(ck['model']['pairs']), N.arx_of(ck['model']['pairs']), N.dv_of(ck['model']['pairs']))
+            seen = N.unseen_of(ck['model']['pairs'])                  # (and --unseen: its read-out, and the layer that gives it to E's at its zero start)
+            told = N.told_of(ck['model']['pairs'])                    # (and --told: the layer the share told comes in by, at its zero start)
+            grown = (bool(a.slow) and not had[0]) or (a.arx and not had[1]) or (a.dv and not had[2]) or (a.unseen and not seen) or (a.told and not told)   # but for the slow sums and the rows' own past: --slow, --arx add them (their layers start at zero: the same function), --dv widens the fits
+            a.slow, a.arx, a.dv = had[0] or a.slow, had[1] or a.arx, had[2] or a.dv
+            a.diff = N.diff_of(ck['model']['pairs'])
+            a.law, a.knots = N.law_of(ck['model']['pairs']), N.knots_of(ck['model']['pairs'])
+            a.formula, a.solve = N.worked_of(ck['model']['pairs'])
+            a.given = N.given_of(ck['model']['pairs'])
+            a.hybrid = N.hybrid_of(ck['model']['pairs'])
     elif ck is not None and 'pairs' in ck['model']:
         assert not set(a.diff)-set(N.diff_of(ck['model']['pairs'])), '--diff on weights whose read-outs give values: fit them again first (python -m aio.relabel)'
         a.diff = N.diff_of(ck['model']['pairs'])                  # the read-outs mean what they do in the weights
         a.slow = N.slow_of(ck['model']['pairs']) or a.slow        # weights that have the slow sums keep theirs; weights without take --slow at its zero start
         a.arx = N.arx_of(ck['model']['pairs']) or a.arx           # the same of --arx
         a.dv = N.dv_of(ck['model']['pairs']) or a.dv              # and of --dv
-    if ck is not None and 'pairs' in ck['model']:
+    if ck is not None and 'pairs' in ck['model'] and not a.seq:
         a.tied = N.tied_of(ck['model']['pairs'])
         a.unseen = N.unseen_of(ck['model']['pairs']) or a.unseen  # weights that have the read-out keep it; weights without take --unseen at its zero start
         a.told = N.told_of(ck['model']['pairs']) or a.told        # the same of --told
-    if resumed and a.seq:                                         # --seq: no pair pathway in the weights; its lags are in the config
-        a.knots = ck['config'].get('knots', a.knots)
-    if resumed and ck['config'].get('priv_critic'):
-        a.priv_critic = True
-    if resumed and ck['config'].get('opt') == 'muon':
-        a.opt = 'muon'
-    if resumed and 'bias_lr_mult' in ck['config']:
-        a.bias_lr_mult = ck['config']['bias_lr_mult']
-    if resumed and not a.seq:
-        a.law, a.knots = N.law_of(ck['model']['pairs']), N.knots_of(ck['model']['pairs'])
-        a.formula, a.solve = N.worked_of(ck['model']['pairs'])
-        a.given = N.given_of(ck['model']['pairs'])
-        a.hybrid = N.hybrid_of(ck['model']['pairs'])
+    if a.priv_critic and not a._fit_chunk_explicit:
+        a.fit_chunk = 0
+    assert not (a.cosine_by == 'updates' and a.total_updates <= 0 and not a.diloco_hub), '--cosine-by updates requires --total-updates > 0'
+    assert not (a.cosine_by == 'samples' and a.total_samples <= 0 and not a.diloco_hub), '--cosine-by samples requires --total-samples > 0'
     shares = sizes_of(a.sizes, a.envs)                            # --sizes: a size a batch
     assert not (a.formula or a.solve or a.given) or all(x[1] == DEFAULT for x in shares or ()), '--formula, --solve and --given are of the default size alone (aio.formula)'
     assert not a.size_stop or a.val_sizes, '--size-stop reads --val-sizes'
     net, critic = nets(a, dev)
-    opt, copt = optimizer(net, a), torch.optim.Adam(critic.parameters(), lr=a.critic_lr)
+    opt, copt = optimizer(net, a), torch.optim.Adam(critic.parameters(), lr=a.critic_lr, **_fused_kw(critic))
     rel_probe = rel_popt = None
     if getattr(a, 'rel_id_coef', 0.) > 0 and getattr(net.actor, 'rel', 0) > 0:
         from aio import seqnet as SQ
         rel_probe = torch.nn.Linear(SQ.rel_feat_dim(net.actor.rel), 3 if net.actor.rel >= 2 else 2).to(dev)
-        rel_popt = torch.optim.AdamW(rel_probe.parameters(), lr=3e-3, weight_decay=1e-2)
+        rel_popt = torch.optim.AdamW(rel_probe.parameters(), lr=3e-3, weight_decay=1e-2, **_fused_kw(rel_probe))
     c = dict(row=0, windows=0, samples=0, updates=0, drawn=0, best=-float('inf'), hours=0., stayed=0, designs=0,   # stayed: of the batches drawn, those that are a next episode of units already counted
              sized=0, plants_by={}, design_plants=0, turns={})    # turns: new batches drawn per kind of lane (`evenly`)              # sized: of the new batches, those drawn by --sizes, whose plants are counted by size
     acc = dict(g=None, n=0, k=0)                                  # shared across sizes (--accum): every accumulated window is at the same weights, no stale gradients
     temp = dict(usual=None, acc=acc, rel_probe=rel_probe, rel_popt=rel_popt)
     temps = {DEFAULT: temp}                                       # the guard's reference per size (--sizes: a batch's gradients are of its size)
+    size_ref = None
+    diloco_ck = {}
     if resumed:
         src = ck.get('raw') or ck['model']                        # (a run with --ema: the steps go on from the weights as stepped)
         net.actor.load_state_dict(src['actor']); net.pairs.load_state_dict(src['pairs'])
@@ -2926,19 +3638,29 @@ def main():
             rel_probe.load_state_dict(ck['rel_probe'])
             if 'rel_popt' in ck:
                 rel_popt.load_state_dict(ck['rel_popt'])
-        temp.update(usual=ck['usual'] if ck.get('guard_units') == GUARD_UNITS else None)   # an older one: measured again at the first window
-        temp.update(gns=list(ck.get('gns') or []))
+        ck_cfg = ck.get('config') or {}
+        old_envs = ck_cfg.get('envs', a.envs)
+        old_map = {x[1]: x[2] for x in (sizes_of(ck_cfg.get('sizes'), old_envs) or [(1., DEFAULT, old_envs)])}
+        new_map = {x[1]: x[2] for x in (shares or [(1., DEFAULT, a.envs)])}
+        same_units = ck.get('guard_units') == GUARD_UNITS
+        temp.update(usual=ck['usual'] if same_units else None)   # an older one: measured again at the first window
+        temp.update(gns=list(ck.get('gns') or []) if (same_units and old_map.get(DEFAULT) == new_map.get(DEFAULT)) else [])
         for q, x in (ck.get('usuals') or {}).items():             # (the other sizes')
-            temps[q] = dict(usual=x['usual'] if ck.get('guard_units') == GUARD_UNITS else None, gns=list(x.get('gns') or []), acc=acc, rel_probe=rel_probe, rel_popt=rel_popt)
+            temps[q] = dict(usual=x['usual'] if same_units else None,
+                            gns=list(x.get('gns') or []) if (same_units and old_map.get(q) == new_map.get(q)) else [],
+                            acc=acc, rel_probe=rel_probe, rel_popt=rel_popt)
         c.update(row=ck['iter'], windows=ck['windows'], samples=ck['samples'], updates=ck.get('updates', ck['windows']), drawn=ck['drawn'], best=ck['best'], hours=ck['hours'],
                  stayed=ck.get('stayed', 0), designs=ck.get('designs', 0), sized=ck.get('sized', 0), plants_by=dict(ck.get('plants_by') or {}),
                  design_plants=ck.get('design_plants', ck.get('designs', 0)*a.design_set), val=ck.get('val'), turns=dict(ck.get('turns') or {}))
         temp.update(zero=ck.get('zero'))
+        size_ref = ck.get('size_ref')
+        diloco_ck = dict(ck.get('diloco') or {})
         pg = ck['opt']['param_groups'][0]
-        was, first = pg.get('set_lr', pg['lr']), a.lr*lr_factor(c['hours'], a.hours)
+        was = pg.get('set_lr', pg['lr'])
+        first = scheduled_lr(a, c, c['hours'], hub_lr=diloco_ck.get('hub_lr') if a.diloco_hub else None)
         a.lr_from = dict(was=was, first=first)                    # the rate the run ended on, and the one its next row would step at
-        # the cosine counts over the new --hours: a run that had come down its own goes back up it (v2-stay-rl2, 11-12: six times, and the weights were gone in 36 steps)
-        assert a.lr_jump or c['row'] < a.warmup or first <= 2*was, (
+        # the cosine counts over the new target: a run that had come down its own goes back up it (v2-stay-rl2, 11-12: six times, and the weights were gone in 36 steps)
+        assert a.lr_jump or c['row'] < a.warmup or bool(a.diloco_hub) or first <= 2*was, (
             f'--resume: the next row would step at {first:.2e}, {first/was:.1f} times the {was:.2e} the run ended on: '
             f'--lr {a.lr*was/first:.2e} keeps it there (--lr-jump: as given)')
     elif a.init and a.seq:                                        # (aio.seqnet: the parts the spec adds and the weights lack, m g p f e, start where they change nothing)
@@ -2994,7 +3716,7 @@ def main():
             if {k for k in critic.state_dict() if not N.has_stats([k])} <= set(ck['model'].get('critic', ())) <= set(critic.state_dict()):
                 critic.load_state_dict(ck['model']['critic'])
     if getattr(a, 'init_pairs', None) and not resumed:
-        got, own = torch.load(a.init_pairs, map_location=dev, weights_only=False)['pairs'], net.pairs.state_dict()
+        got, own = safe_torch_load(a.init_pairs, map_location='cpu')['pairs'], net.pairs.state_dict()
         same = {k: v for k, v in got.items() if k in own and own[k].shape == v.shape}
         assert any(k.startswith('reader.') for k in same), '--init-pairs: none of the learned reader\'s weights fit (another size asked for with --reader?)'
         net.pairs.load_state_dict(same, strict=False)
@@ -3004,73 +3726,137 @@ def main():
     ema = None
     if a.ema:                                                     # (resumed from a run without one: the average starts at its weights)
         kept = resumed and 'raw' in ck
-        ema = Average(net, a.ema, ck.get('ema_n', 0) if kept else 0)
+        ema_dev = torch.device('cpu') if a.ema_device == 'cpu' or dev.type == 'cpu' else dev
+        ema = Average(net, a.ema, ck.get('ema_n', 0) if kept else 0, device=ema_dev)
         if kept:
             ema.avg.actor.load_state_dict(ck['model']['actor']); ema.avg.pairs.load_state_dict(ck['model']['pairs'])
         opt.register_step_post_hook(ema)
+    del ck                                                        # release CPU checkpoint memory before building batches
     shown = ema.avg if ema else net                               # what is validated and kept as `model`
     if (getattr(a, 'compile', False) or os.environ.get('AIO_COMPILE') == '1') and dev.type == 'cuda':
         try:
             import triton  # noqa: F401
             if hasattr(net.actor, 'enable_compile'):
                 net.actor.enable_compile(dynamic=True)
-                if ema is not None:
+                if ema is not None and ema.device.type == 'cuda':
                     ema.avg.actor.enable_compile(dynamic=True)
             if getattr(critic, 'privileged', False):
-                critic.forward = torch.compile(critic.forward, dynamic=True)
-            print(json.dumps(dict(compiled=True, triton=getattr(triton, '__version__', 'ok'))), flush=True)
+                torch._dynamo.config.cache_size_limit = max(getattr(torch._dynamo.config, 'cache_size_limit', 8), 64)
+                critic.forward = torch.compile(critic.forward, dynamic=False)
+            if getattr(a, 'mech', 0.) == 0. and hasattr(C, 'enable_sim_compile'):
+                C.enable_sim_compile(True, dynamic=False)
+                if hasattr(N, 'enable_priv_compile'):
+                    N.enable_priv_compile(True, dynamic=False)
+            print(json.dumps(dict(compiled=True, triton=getattr(triton, '__version__', 'ok'), sim_compiled=bool(getattr(C, 'is_sim_compiled', lambda: False)()))), flush=True)
         except Exception as exc:
             print(json.dumps(dict(compiled=False, reason=repr(exc))), flush=True)
-    vprog = C.build(a.val_n, a.val_seed, dev, 'cpu', mech=a.val_mech)     # always drawn on the CPU: the same episodes on every machine
-    ref = cached_refs(a.val_cache, f'val-n{a.val_n}-s{a.val_seed}-m{a.val_mech}-mt{int(bool(a.meter))}', vprog, a.meter)
-    scale, refs_used = scale_of(ref, a.refs)
-    if resumed and temp.pop('zero') != SC.ZERO:                   # a checkpoint of the scale whose 0 was the formula PI: its best, read on this one
-        c['best'] = scale.from_recovered(c['best'])
-    refs = ref_table(vprog, ref, scale)                           # (the references on the plants with a level and on the others, as `validate` reads the network)
-    parked(vprog)                                                 # the validation batches wait on the CPU (`visit`: on the card for a reading)
-    vsizes = size_vals(a.val_sizes, a.val_seed, dev, a.meter, a.val_cache)     # --val-sizes: a batch of each of the larger sizes
-    stay = Stay(a.val_stay_n, a.val_seed+1, a.val_stay, dev, nseg=a.val_nseg) if a.val_stay > 1 else None
-    exams = exams_of(a.val_exams, a.val_stay_n, a.val_stay if a.val_stay > 1 else ST.EXAM_WINDOWS, dev, a.val_exams_refs, a.val_nseg) if a.val_exams else {}
-    known = (not a.no_known_val) and not a.seq                    # SeqAIO ignores `code`: skip duplicate identical 256-plant rollout
-    if c['row'] == 0:                                             # where the run starts from, on the same batch
-        start = dict(val={q: round(x, 4) for q, x in validate(net, vprog, ref, scale, known).items()})
-        if stay:
-            start['stay'] = stay(net)
-        if exams:
-            start['exams'] = read_exams(exams, net)
-        if vsizes:
-            start['val_sizes'] = read_sizes(vsizes, net)
-    else:                                                         # a resumed run keeps the record of its start
-        old = a.out/'run.json'
-        start = json.loads(old.read_text()).get('start') if old.exists() else None
-        if stay and not (start or {}).get('stay'):               # (a run that had no --val-stay: where it stands when it gets one)
-            start = dict(start or {}, stay=dict(stay(shown), iter=c['row']))
-        if exams and not (start or {}).get('exams'):
-            start = dict(start or {}, exams=read_exams(exams, shown), exams_iter=c['row'])
-        if vsizes and not (start or {}).get('val_sizes'):
-            start = dict(start or {}, val_sizes=read_sizes(vsizes, shown), val_sizes_iter=c['row'])
+    quiet_paused_s = [0.0]
+
+    def maybe_quiet_pause(forget_models=True, count_pause=True):
+        if not getattr(a, 'quiet_hours', ''):
+            return
+        wait_s = quiet_sleep_seconds(a.quiet_hours, getattr(a, 'quiet_tz', 'Asia/Shanghai'))
+        if wait_s <= 0:
+            return
+        if forget_models:
+            forget(net, shown)
+        if dev.type == 'cuda':
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        print(dumps(dict(quiet_pause=a.quiet_hours, tz=a.quiet_tz, resume_in_s=round(wait_s, 1))), flush=True)
+        q_start = time.time()
+        while True:
+            rem = quiet_sleep_seconds(a.quiet_hours, getattr(a, 'quiet_tz', 'Asia/Shanghai'))
+            if rem <= 0:
+                break
+            alive(row=c['row'], windows=c['windows'], quiet=True)
+            time.sleep(min(60.0, rem))
+        slept = time.time()-q_start
+        if count_pause:
+            quiet_paused_s[0] += slept
+        print(dumps(dict(quiet_resume=a.quiet_hours, slept_s=round(slept, 1))), flush=True)
+
+    maybe_quiet_pause(forget_models=False, count_pause=False)
+    if a.eval_every > 0:
+        vprog = C.build(a.val_n, a.val_seed, dev, 'cpu', mech=a.val_mech)     # always drawn on the CPU: the same episodes on every machine
+        ref = cached_refs(a.val_cache, f'val-n{a.val_n}-s{a.val_seed}-m{a.val_mech}-mt{int(bool(a.meter))}', vprog, a.meter)
+        scale, refs_used = scale_of(ref, a.refs)
+        if resumed and temp.pop('zero') != SC.ZERO:                   # a checkpoint of the scale whose 0 was the formula PI: its best, read on this one
+            c['best'] = scale.from_recovered(c['best'])
+        refs = ref_table(vprog, ref, scale)                           # (the references on the plants with a level and on the others, as `validate` reads the network)
+        parked(vprog)                                                 # the validation batches wait on the CPU (`visit`: on the card for a reading)
+        vsizes = size_vals(a.val_sizes, a.val_seed, dev, a.meter, a.val_cache)     # --val-sizes: a batch of each of the larger sizes
+        stay = Stay(a.val_stay_n, a.val_seed+1, a.val_stay, dev, nseg=a.val_nseg) if a.val_stay > 1 else None
+        exams = exams_of(a.val_exams, a.val_stay_n, a.val_stay if a.val_stay > 1 else ST.EXAM_WINDOWS, dev, a.val_exams_refs, a.val_nseg) if a.val_exams else {}
+        known = (not a.no_known_val) and not a.seq                    # SeqAIO ignores `code`: skip duplicate identical 256-plant rollout
+        if c['row'] == 0:                                             # where the run starts from, on the same batch
+            start = dict(val={q: round(x, 4) for q, x in validate(net, vprog, ref, scale, known).items()})
+            if stay:
+                start['stay'] = stay(net)
+            if exams:
+                start['exams'] = read_exams(exams, net)
+            if vsizes:
+                start['val_sizes'] = read_sizes(vsizes, net)
+        else:                                                         # a resumed run keeps the record of its start
+            old = a.out/'run.json'
+            start = json.loads(old.read_text()).get('start') if old.exists() else None
+            with on_device(shown, dev):
+                if stay and not (start or {}).get('stay'):               # (a run that had no --val-stay: where it stands when it gets one)
+                    start = dict(start or {}, stay=dict(stay(shown), iter=c['row']))
+                if exams and not (start or {}).get('exams'):
+                    start = dict(start or {}, exams=read_exams(exams, shown), exams_iter=c['row'])
+                if vsizes and not (start or {}).get('val_sizes'):
+                    start = dict(start or {}, val_sizes=read_sizes(vsizes, shown), val_sizes_iter=c['row'])
+    else:                                                             # --eval-every 0: skip all validation setup & rollouts (0 s overhead)
+        temp.pop('zero', None)
+        vprog = ref = scale = refs_used = refs = stay = start = None
+        vsizes, exams, known = {}, {}, False
     # --size-stop: the points on each larger size the simulator gradient is held to, the last reading with the teacher alone
-    size_ref = ck.get('size_ref') if resumed else None
     if size_ref is None and (start or {}).get('val_sizes'):
         size_ref = {q: v['pts'] for q, v in start['val_sizes'].items()}
-    meta = dict(vars(a), out=str(a.out), init=str(a.init) if a.init else None, refs=str(a.refs) if a.refs else None, refs_used=refs_used,
-                trainer='aio.train', version=2, canonical=True, horizon=HORIZON, val_refs=refs, scale=scale.meta(), start=start,
-                stay_refs=stay.meta() if stay else None, exam_refs={q: e.meta() for q, e in exams.items()} or None,
-                val_size_refs={q: ref_table(*v) for q, v in vsizes.items()} or None)
+    meta = sanitize_paths(dict({k: v for k, v in vars(a).items() if not k.startswith('_')},
+                               out=str(a.out), init=str(a.init) if a.init else None, refs=str(a.refs) if a.refs else None, refs_used=refs_used,
+                               trainer='aio.train', version=2, canonical=True, horizon=HORIZON, val_refs=refs, scale=scale.meta() if scale else None, start=start,
+                               stay_refs=stay.meta() if stay else None, exam_refs={q: e.meta() for q, e in exams.items()} or None,
+                               val_size_refs={q: ref_table(*v) for q, v in vsizes.items()} or None))
     (a.out/'run.json').write_text(dumps(meta, indent=1, default=str))
     print(dumps(meta, default=str), flush=True)
     t0 = time.time()
-    hours = lambda: c['hours']+(time.time()-t0)/3600              # noqa: E731
+    hours = lambda: c['hours']+(time.time()-t0-quiet_paused_s[0])/3600              # noqa: E731
+    diloco = None
+    if a.diloco_hub:
+        diloco = DiLoCoClient(a.diloco_hub, a.diloco_h, worker=a.diloco_worker or a.out.name,
+                              compress=a.diloco_compress, timeout=a.diloco_timeout,
+                              round_idx=diloco_ck.get('round', 0), hub_lr=diloco_ck.get('hub_lr'))
+        diloco.snapshot_anchor(net)
 
     def save(name, val=None):
         more = dict(raw=dict(actor=net.actor.state_dict(), pairs=net.pairs.state_dict()), ema_n=ema.n) if ema else {}
         if rel_probe is not None:
             more.update(rel_probe=rel_probe.state_dict(), rel_popt=rel_popt.state_dict())
-        torch.save(dict(model=dict(actor=shown.actor.state_dict(), pairs=shown.pairs.state_dict(), critic=critic.state_dict()), **more, opt=opt.state_dict(),
-                        copt=copt.state_dict(), usual=temp['usual'], gns=temp.get('gns'), guard_units=GUARD_UNITS, zero=SC.ZERO, config=dict(meta, canonical=True), iter=c['row'], windows=c['windows'],
-                        usuals={q: dict(usual=x['usual'], gns=x.get('gns')) for q, x in temps.items() if q != DEFAULT}, size_ref=size_ref,
-                        samples=c['samples'], updates=c['updates'], drawn=c['drawn'], stayed=c['stayed'], designs=c['designs'], sized=c['sized'], plants_by=c['plants_by'],
-                        design_plants=design_plants(), best=c['best'], hours=hours(), val=val, turns=c['turns']), a.out/f'{name}.pt')
+        if diloco is not None:
+            more['diloco'] = diloco.state_meta()
+        atomic_save(dict(model=dict(actor=shown.actor.state_dict(), pairs=shown.pairs.state_dict(), critic=critic.state_dict()), **more, opt=opt.state_dict(),
+                         copt=copt.state_dict(), usual=temp['usual'], gns=temp.get('gns'), guard_units=GUARD_UNITS, zero=SC.ZERO,
+                         config=sanitize_paths(dict(meta, canonical=True)), iter=c['row'], windows=c['windows'],
+                         cosine_by=a.cosine_by, total_updates=a.total_updates, total_samples=a.total_samples,
+                         usuals={q: dict(usual=x['usual'], gns=x.get('gns')) for q, x in temps.items() if q != DEFAULT}, size_ref=size_ref,
+                         samples=c['samples'], updates=c['updates'], drawn=c['drawn'], stayed=c['stayed'], designs=c['designs'], sized=c['sized'], plants_by=c['plants_by'],
+                         design_plants=design_plants(), best=c['best'], hours=hours(), val=val, turns=c['turns']), a.out/f'{name}.pt')
+
+    def save_eval_snap(row_idx):
+        eval_dir = a.out/'eval'
+        snap = dict(
+            model=dict(actor=pack_eval_state(shown.actor.state_dict()),
+                       pairs={k: v.detach().cpu() for k, v in shown.pairs.state_dict().items()}),
+            config=sanitize_paths(dict(meta, canonical=True)),
+            iter=row_idx, hours=hours(), updates=c['updates'], samples=c['samples'], eval_snap=True,
+        )
+        if a.eval_snap_raw and ema is not None:
+            snap['raw'] = dict(actor=pack_eval_state(net.actor.state_dict()),
+                               pairs={k: v.detach().cpu() for k, v in net.pairs.state_dict().items()})
+        atomic_save(snap, eval_dir/f'row{row_idx}.pt')
+        prune_saves(eval_dir, a.keep_eval_snaps)
 
     def seed():                                                   # of the next batch of plants; fixed sets (validation) use seeds below 2^32
         c['drawn'] += 1
@@ -3113,6 +3899,8 @@ def main():
     menu_stay = menu_kw(a.menu_stay, a.nseg, True) if a.menu_stay is not None else menu      # on the lanes that keep their plants
     menu_plain = menu_kw(a.menu_plain, a.nseg)                    # on every --plain-th lane
     mix = mix_of(a.menu_mix)                                      # groups of fields a new batch takes by chance, over --menu (--menu-stay on the lanes that keep their plants)
+    p_mix = 1.-math.prod(1.-p for p, _ in mix) if mix else 0.
+    hard_seeds = HardSeeds(a.hard_seeds, a.hard_share)            # --hard-seeds / --hard-share: mined hard batch seeds paired with fresh event_seeds
     groups = groups_of(a.mech_groups)                             # kinds of mechanistic plants a batch that has any takes together
     stays = groups_of(a.mech_groups_stay) if a.mech_groups_stay is not None else None   # on the lanes that keep their plants, where they are others
     go_on = lambda kw: {q: v for q, v in kw.items() if q in GO_ON}    # noqa: E731  (the plants are there: only what changes on them is asked again)
@@ -3127,7 +3915,7 @@ def main():
         t, mech = time.time(), 0. if short(i) else a.mech
         plain, keeps = bool(a.plain and i % a.plain == a.plain-1), a.stay > 1 and i % 2 == 0      # --stay: the even lanes keep their plants
         kw, on, depth = menu_plain if plain else menu_stay if keeps else menu, None, a.builders if short(i) else a.ahead
-        if (mix and not plain) or (groups and mech) or shares:    # --menu-mix, --mech-groups, --sizes: the batch's own menu, kinds of mechanistic plants and size, by its seed
+        if (mix and not plain) or (groups and mech) or shares or (hard_seeds.active and not plain):    # --menu-mix, --mech-groups, --sizes, --hard-seeds
             base, same = a.menu_stay if keeps and a.menu_stay is not None else a.menu, kw
             kind = 'plain' if plain else 'stay' if keeps else 'new'
             gs, chance, first = (stays, a.mech_batches if a.mech_batches_stay is None else a.mech_batches_stay, len(groups)) if keeps and stays is not None \
@@ -3147,7 +3935,9 @@ def main():
                     c['sized'] += 1
                     c['plants_by'][size] = c['plants_by'].get(size, 0)+n
                     kw = dict(kw, envs=n, **({} if usual else dict(dims=size)))
-                return dict(kw, mech=m, names=names), (on, g)
+                ps = hard_seeds.pick(sd, plain=plain, is_default_size=usual, menu_active=bool(on and any(on)), p_menu=p_mix)
+                extra = dict(plant_seed=ps, event_seed=sd) if ps is not None else {}
+                return dict(kw, mech=m, names=names, **extra), (on, g)
             if ahead:
                 prog, kw, on = ahead.own(('own', keeps, plain, mech), kw_of, depth)
                 prog = moved(prog, dev)
@@ -3182,8 +3972,24 @@ def main():
     done = dict(score=None, failed=None)
     stopped = None                                                # --size-stop: why the run stopped early
     alloc = retries(dev)                                          # (rows: alloc, the allocator's counts of the row)
-    while c['row'] < a.rows and hours() < a.hours and stopped is None:
-        lr = a.lr*min(1., (c['row']+1)/max(a.warmup, 1))*lr_factor(hours(), a.hours)
+    last_eval_snap_row = -1
+
+    def keep_going():
+        if c['row'] >= a.rows or stopped is not None:
+            return False
+        if a.cosine_by == 'hours':
+            return hours() < a.hours
+        if (time.time()-t0-quiet_paused_s[0])/3600 >= a.hours:    # wall-clock active session cap decoupled from LR schedule & quiet sleep
+            return False
+        if a.cosine_by == 'updates' and a.total_updates > 0 and c['updates'] >= a.total_updates:
+            return False
+        if a.cosine_by == 'samples' and a.total_samples > 0 and c['samples'] >= a.total_samples:
+            return False
+        return True
+
+    while keep_going():
+        maybe_quiet_pause(forget_models=True, count_pause=True)
+        lr = scheduled_lr(a, c, hours(), hub_lr=None if diloco is None else diloco.hub_lr)
         for g in opt.param_groups:
             g['lr'] = g['set_lr'] = lr*g.get('lr_mult', 1.)
         if hasattr(opt, 'warm_n'):                                # --warm-steps: counted on from the run's steps
@@ -3191,6 +3997,7 @@ def main():
         w = weights(c['row'], a)
         a.window = windows[w['sim'] > 0]
         t, logs, c['t_build'], t_sizes = time.time(), [], 0., {}
+        row_updates = row_samples = 0
         for _ in range(a.row or math.ceil(HORIZON/a.window)):
             i = c['windows'] % a.lanes
             alive(row=c['row'], windows=c['windows'])
@@ -3208,8 +4015,8 @@ def main():
                     lanes[i] = None                               # the old batch is released before the new one is built
                     lanes[i] = fresh(i)
             if shares:
-                if dev.type == 'cuda' and lanes[i].size != c.get('size'):      # a window of another size than the last: what the allocator kept of that one fits none of
-                    torch.cuda.empty_cache()                                 # this one's tensors (11-13: 13 GB in use at a peak, 18 to 21 GB held, on a 16 GB card)
+                if dev.type == 'cuda' and lanes[i].size != c.get('size'):
+                    maybe_empty_cache(dev, .85, expandable)
                 c['size'] = lanes[i].size
                 settle()
             t1 = time.time()
@@ -3223,7 +4030,10 @@ def main():
             logs[-1].update(age=float(lanes[i].age), size=lanes[i].size)
             if lanes[i].age:                                      # the readout on units run for an episode or more (--stay), beside the row's over all
                 logs[-1].update(id_own_stay=logs[-1]['id_own'], id_cross_stay=logs[-1]['id_cross'])
-            c['windows'] += 1; c['samples'] += logs[-1]['steps']; c['updates'] += logs[-1].get('updates', 1)
+            u_inc = logs[-1].get('updates', 1)
+            s_inc = logs[-1]['steps']
+            c['windows'] += 1; c['samples'] += s_inc; c['updates'] += u_inc
+            row_updates += u_inc; row_samples += s_inc
         c['row'] += 1
         avg = lambda q: (lambda v: sum(v)/len(v) if v else None)([x[q] for x in logs if x.get(q) is not None])   # noqa: E731
         eff_lr = lr*min(1., max(c['updates'], 1)/a.warm_steps) if getattr(a, 'warm_steps', 0) > 0 else lr
@@ -3258,53 +4068,75 @@ def main():
             row['mix'] = [None if x.mix is None else list(x.mix) for x in lanes]
         if groups:                                                # --mech-groups: per lane, the group its plants' mechanistic episodes are of (None: it has none)
             row['mech'] = [x.group for x in lanes]
+        if diloco is not None:                                    # Elastic MuLoCo sync at exact row boundary
+            diloco.record(row_updates, row_samples)
+            d_res = diloco.maybe_sync(net, critic, rel_probe)
+            if d_res is not None:
+                row['diloco'] = d_res
         alive(row=c['row'], windows=c['windows'])
-        if c['row'] % a.eval_every == 0:
+        if a.eval_every > 0 and c['row'] % a.eval_every == 0:
             tv = row['t_val'] = {}                                # the seconds of each reading of this validation
             forget(net, shown)                                    # the training batches' kept memories are not held through the validation
-            v = timed(tv, 'val', validate, shown, vprog, ref, scale, known)
-            row['val'] = {q: round(x, 4) for q, x in v.items()}
-            if stay and (c['row']//a.eval_every) % a.val_stay_every == 0:
-                row['stay'] = timed(tv, 'stay', stay, shown)
-            if exams and (c['row']//a.eval_every) % a.val_stay_every == 0:
-                row['exams'] = timed(tv, 'exams', read_exams, exams, shown)
-            if ema and a.val_raw:
-                row['raw'] = {q: round(x, 4) for q, x in timed(tv, 'raw', validate, net, vprog, ref, scale, False).items()}
-            if vsizes:                                            # the larger sizes, and the line the simulator gradient is held to on them
-                row['val_sizes'] = timed(tv, 'sizes', read_sizes, vsizes, shown)
-                now = {q: x['pts'] for q, x in row['val_sizes'].items()}
-                if w['sim'] == 0 or size_ref is None:
-                    size_ref = now
-                elif a.size_stop:
-                    drop = {q: round(size_ref[q]-x, 2) for q, x in now.items() if q in size_ref}
-                    if any(x > a.size_stop for x in drop.values()):
-                        stopped = row['stopped'] = dict(iter=c['row'], drop=drop, ref=size_ref, now=now)
+            with on_device(shown, dev):
+                v = timed(tv, 'val', validate, shown, vprog, ref, scale, known)
+                row['val'] = {q: round(x, 4) for q, x in v.items()}
+                if stay and (c['row']//a.eval_every) % a.val_stay_every == 0:
+                    row['stay'] = timed(tv, 'stay', stay, shown)
+                if exams and (c['row']//a.eval_every) % a.val_stay_every == 0:
+                    row['exams'] = timed(tv, 'exams', read_exams, exams, shown)
+                if ema and a.val_raw:
+                    row['raw'] = {q: round(x, 4) for q, x in timed(tv, 'raw', validate, net, vprog, ref, scale, False).items()}
+                if vsizes:                                            # the larger sizes, and the line the simulator gradient is held to on them
+                    row['val_sizes'] = timed(tv, 'sizes', read_sizes, vsizes, shown)
+                    now = {q: x['pts'] for q, x in row['val_sizes'].items()}
+                    if w['sim'] == 0 or size_ref is None:
+                        size_ref = now
+                    elif a.size_stop:
+                        drop = {q: round(size_ref[q]-x, 2) for q, x in now.items() if q in size_ref}
+                        if any(x > a.size_stop for x in drop.values()):
+                            stopped = row['stopped'] = dict(iter=c['row'], drop=drop, ref=size_ref, now=now)
             if v['pts'] > c['best']:
                 c['best'] = v['pts']; save('best', v)
             c['val'] = v
-            if a.save_every and c['row'] % a.save_every == 0:
-                save(f'row{c["row"]}', v)
-                prune_saves(a.out, a.keep_saves)
+        if a.save_every and c['row'] % a.save_every == 0:
+            save(f'row{c["row"]}', c.get('val'))
+            prune_saves(a.out, a.keep_saves)
+        if a.eval_snap_every and c['row'] % a.eval_snap_every == 0:
+            save_eval_snap(c['row'])
+            last_eval_snap_row = c['row']
         save('last', c.get('val'))                                # every row: where a run that is stopped goes on from (`val`: its last validation)
         if dev.type == 'cuda':                                    # GB: the most in use at once in this row (its validation included), and what
             row['gb'] = [round(x/2**30, 2) for x in (torch.cuda.max_memory_allocated(), torch.cuda.max_memory_reserved())]   # the allocator held (what the card shows);
             row['alloc'] = [x for x in retries(dev, alloc).values()]; alloc = retries(dev)         # retries, blocks asked for, given back (`retries`)
-            torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()                    # what was needed once is given back to the card
+            maybe_empty_cache(dev, .85, expandable); torch.cuda.reset_peak_memory_stats()
         line = dumps(row); print(line, flush=True); log.write(line+'\n'); log.flush()
-    v = validate(shown, vprog, ref, scale, known)
-    if v['pts'] > c['best']:
-        c['best'] = v['pts']; save('best', v)
-    save('last', v)
-    if a.save_every:                                              # the row a run ends on stays when the run is carried on in its directory
-        save(f'row{c["row"]}', v)
-        prune_saves(a.out, a.keep_saves)
-    final = dict(iter=c['row'], samples=c['samples'], hours=round(hours(), 3), val=v, val_refs=refs, scale=scale.meta(), best=c['best'], stopped=stopped)
-    if vsizes:
-        final.update(val_sizes=read_sizes(vsizes, shown), val_size_refs=meta['val_size_refs'])
-    if stay:
-        final.update(stay=stay(shown), stay_refs=stay.meta())
-    if exams:
-        final.update(exams=read_exams(exams, shown), exam_refs={q: e.meta() for q, e in exams.items()})
+    log.close()
+    if a.eval_every > 0:
+        with on_device(shown, dev):
+            v = validate(shown, vprog, ref, scale, known)
+            if v['pts'] > c['best']:
+                c['best'] = v['pts']; save('best', v)
+            save('last', v)
+            if a.save_every:                                              # the row a run ends on stays when the run is carried on in its directory
+                save(f'row{c["row"]}', v)
+                prune_saves(a.out, a.keep_saves)
+            if a.eval_snap_every and c['row'] != last_eval_snap_row:
+                save_eval_snap(c['row'])
+            final = dict(iter=c['row'], updates=c['updates'], samples=c['samples'], hours=round(hours(), 3), val=v, val_refs=refs, scale=scale.meta(), best=c['best'], stopped=stopped)
+            if vsizes:
+                final.update(val_sizes=read_sizes(vsizes, shown), val_size_refs=meta['val_size_refs'])
+            if stay:
+                final.update(stay=stay(shown), stay_refs=stay.meta())
+            if exams:
+                final.update(exams=read_exams(exams, shown), exam_refs={q: e.meta() for q, e in exams.items()})
+    else:
+        save('last', c.get('val'))
+        if a.save_every:
+            save(f'row{c["row"]}', c.get('val'))
+            prune_saves(a.out, a.keep_saves)
+        if a.eval_snap_every and c['row'] != last_eval_snap_row:
+            save_eval_snap(c['row'])
+        final = dict(iter=c['row'], updates=c['updates'], samples=c['samples'], hours=round(hours(), 3), val=c.get('val'), val_refs=None, scale=None, best=c['best'], stopped=stopped)
     (a.out/'final.json').write_text(dumps(final, indent=1))
     print(dumps(dict(final=final)), flush=True)
     faulthandler.cancel_dump_traceback_later()
