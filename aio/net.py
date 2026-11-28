@@ -949,50 +949,81 @@ class Critic(nn.Module):
 
 
 PRIV_CV, PRIV_MV, PRIV_EDGE, PRIV_G = 25, 10, 4, 2
+_PRIV_P_KEYS = ('K', 'dead', 'p1r', 'c0r', 'c1r', 'c0i', 'c1i')
+_PRIV_T_KEYS = ('cvw', 'ulo', 'uhi')
+_PRIV_C_KEYS = ('bandf', 'rowm', 'prc', 'trk', 'zon', 'mvm', 'integ', 'rst', 'tint', 'lam', 'vc', 'slew', 'link', 'jload', 'uref', 'kap', 'warp')
+_PRIV_ST_KEYS = ('yt', 'v', 'fl', 'l1', 'l2', 'sr', 'si', 'buf', 'target', 'u', 'ua', 'xv', 'prev_u', 'd', 'fail', 'thist', 'alo', 'ahi', 'lo', 'hi', 'rhist')
+_PRIV_COMPILE = None
+_PRIV_COMPILE_CPU = False
+_PRIV_COMPILED_PROG = None
+_PRIV_COMPILED_CTX = None
 
 
-def priv_features(prog, st, k):
-    """Differentiable privileged simulator state features at decision k (training-only Critic; never deployed).
-    Preserves exact autograd paths through true noiseless yt, v, fl, l1, l2, sr, si, dead-time-indexed delay
-    pipeline buf[0..dd], Smith-predictor ultimate error err_inf, integrating-level in-flight pipe drift, and
-    valve states u, ua, xv so moves made inside long dead times (dd up to 60) near the window boundary get
-    exact, aligned gradients with zero leak to expired slots s >= dd.
-    -> (cv_feat (n,NCV,PRIV_CV), mv_feat (n,NMV,PRIV_MV), edge (n,NCV,NMV,PRIV_EDGE), cm (n,NCV), mm (n,NMV), g (n,PRIV_G))."""
-    from aio.sim import core as C
-    from aio.sim.prior import DMAX, HORIZON
-    NCV, NMV = prog.ncv, prog.nmv
-    c, n, dev = prog.c, prog.n, prog.device
-    k_cl = min(int(k), HORIZON-1)
-    seg = prog.seg_at(k_cl)
-    P, t = prog.params(seg, k_cl), prog.task(seg)
-    phi = C._phi(st['xv'], st['d'], c)
-    ref, alo, ahi, zlo, zhi, rref = C._reference(st, P, phi.detach(), c, t)
-    band = c['bandf'].float().clamp_min(1e-6)
-    rowm, prc, trk, zon = c['rowm'].float(), c['prc'].float(), c['trk'].float(), c['zon'].float()
-    mvm = c['mvm'].float()
-    ig = (c['integ'] > 0).float()
-    rst = (c['rst'] > 0).float()
-    yt, v, fl = st['yt'].float(), st['v'].float(), st['fl'].float()
+def _priv_features_from_prog(k_t, NCV, NMV, lay_p, tlay_t, P_flat, T_flat, seg_k, ramp, ar, c_vals, st_vals, st_od):
+    n = ar.shape[0]
+    seg = (seg_k <= k_t).sum(1)-1
+    P1 = P_flat[ar, seg]
+    w_r = ((k_t+1-seg_k[ar, seg])/ramp[ar, seg].clamp_min(1.)).clamp(0., 1.)[:, None]
+    P0 = P_flat[ar, (seg-1).clamp_min(0)]
+    Pf = P0+w_r*(P1-P0)
+    P_vals = tuple(Pf[:, a0:b0].reshape(n, *sh) for a0, b0, sh in lay_p)
+    Tf = T_flat[ar, seg]
+    t_vals = tuple(Tf[:, a0:b0].reshape(n, *sh) for a0, b0, sh in tlay_t)
+    return _priv_features_math_od(NCV, NMV, P_vals, t_vals, c_vals, st_vals, st_od, None)
+
+
+def _priv_features_math_od(NCV, NMV, P_vals, t_vals, c_vals, st_vals, st_od, phi):
+    from aio.sim import prior as PR
+    from aio.sim.prior import DMAX
+    P_K, P_dead, P_p1r, P_c0r, P_c1r, P_c0i, P_c1i = P_vals
+    t_cvw, t_ulo, t_uhi = t_vals
+    (c_bandf, c_rowm, c_prc, c_trk, c_zon, c_mvm, c_integ, c_rst, c_tint, c_lam, c_vc, c_slew, c_link,
+     c_jload, c_uref, c_kap, c_warp) = c_vals
+    (st_yt, st_v, st_fl, st_l1, st_l2, st_sr, st_si, st_buf, st_target, st_u, st_ua, st_xv, st_prev_u,
+     st_d, st_fail, st_thist, st_alo, st_ahi, st_lo, st_hi, st_rhist) = st_vals
+    n, dev = st_yt.shape[0], st_yt.device
+    if phi is None:
+        ND = st_d.shape[1]//2
+        load = torch.gather(torch.cat((st_xv, (st_d[:, :ND]+1)/2), 1), 1, c_jload[:, None])[:, 0].clamp(0., 1.)
+        w_phi = ((load+.25)/(c_uref+.25))**c_kap
+        phi = torch.where(c_warp > 0, w_phi, torch.ones_like(w_phi)).clamp(.4, 2.5)
+    phi_det = phi.detach()
+    K_abs = P_K[:, :, :NMV].abs()
+    can = ((c_mvm > 0) & PR.in_service(t_ulo, t_uhi))[:, None, :] & (K_abs > 0) & (K_abs >= .05*K_abs.amax(-1, keepdim=True))
+    d_ref = (P_dead[:, :, :NMV]/phi_det[:, None, None]).round().clamp(0, DMAX)
+    d_ref = torch.where(can, d_ref, torch.full_like(d_ref, DMAX)).amin(-1)
+    d_ref = torch.where(c_prc > 0, d_ref, torch.zeros_like(d_ref)).long()[:, None, :]
+    ref = torch.gather(st_thist, 1, d_ref)[:, 0]
+    alo = torch.gather(st_alo, 1, d_ref)[:, 0]
+    ahi = torch.gather(st_ahi, 1, d_ref)[:, 0]
+    zlo = torch.gather(st_lo, 1, d_ref)[:, 0]
+    zhi = torch.gather(st_hi, 1, d_ref)[:, 0]
+    rref = torch.gather(st_rhist, 1, d_ref)[:, 0]
+
+    band = c_bandf.float().clamp_min(1e-6)
+    rowm, prc, trk, zon = c_rowm.float(), c_prc.float(), c_trk.float(), c_zon.float()
+    mvm = c_mvm.float()
+    ig = (c_integ > 0).float()
+    rst = (c_rst > 0).float()
+    yt, v, fl = st_yt.float(), st_v.float(), st_fl.float()
     err_b = (yt-ref.float())/band
     ex_trk = torch.maximum(alo.float()-1.-err_b, err_b-ahi.float()-1.)*trk
     ex_zon = (torch.maximum(zlo.float()-yt, yt-zhi.float())/band-ahi.float())*zon
-    tint = c['tint'].float().clamp_min(1e-6)
-    lev_rate = (fl+c['lam'].float()*(v-c['vc'].float()))/tint/band*ig
-    # Exact local gain, dead time dd, and pole time constant per (CV, MV) pair
-    K_mv = P['K'][:, :, :NMV].float()/band[:, :, None]*prc[:, :, None]*mvm[:, None, :]
+    tint = c_tint.float().clamp_min(1e-6)
+    lev_rate = (fl+c_lam.float()*(v-c_vc.float()))/tint/band*ig
+    K_mv = P_K[:, :, :NMV].float()/band[:, :, None]*prc[:, :, None]*mvm[:, None, :]
     e = phi[:, None, None]
-    dd = (P['dead'][:, :, :NMV]/e).round().clamp(0, DMAX).long()                   # (n, NCV, NMV)
+    dd = (P_dead[:, :, :NMV]/e).round().clamp(0, DMAX).long()
     dd_f = dd.float()
-    tau_p = (-1./(P['p1r'][:, :, :NMV].float()*e.float()).clamp_max(-1e-3)).clamp(0., 256.)
-    cr = torch.stack((P['c0r'][:, :, :NMV], P['c1r'][:, :, :NMV]), -1).float()
-    ci = torch.stack((P['c0i'][:, :, :NMV], P['c1i'][:, :, :NMV]), -1).float()
-    mode_mv = (cr*st['sr'][:, :, :NMV].float()-ci*st['si'][:, :, :NMV].float()).sum(-1)
-    # Exact dead-time-indexed slices of the delay pipe buf (0 = newest move, dd = exiting now, >= dd expired)
-    buf_mv = st['buf'][:, :, :NMV].float()                                        # (n, DMAX+1, NMV)
+    tau_p = (-1./(P_p1r[:, :, :NMV].float()*e.float()).clamp_max(-1e-3)).clamp(0., 256.)
+    cr = torch.stack((P_c0r[:, :, :NMV], P_c1r[:, :, :NMV]), -1).float()
+    ci = torch.stack((P_c0i[:, :, :NMV], P_c1i[:, :, :NMV]), -1).float()
+    mode_mv = (cr*st_sr[:, :, :NMV].float()-ci*st_si[:, :, :NMV].float()).sum(-1)
+    buf_mv = st_buf[:, :, :NMV].float()
     buf_now = buf_mv[:, 0]
-    s_idx = torch.arange(buf_mv.shape[1], device=dev)[None, None, None, :]        # (1, 1, 1, D+1)
-    dd_e = dd[..., None]                                                          # (n, NCV, NMV, 1)
-    b_exp = buf_mv.transpose(1, 2)[:, None, :, :]                                 # (n, 1, NMV, D+1)
+    s_idx = torch.arange(buf_mv.shape[1], device=dev)[None, None, None, :]
+    dd_e = dd[..., None]
+    b_exp = buf_mv.transpose(1, 2)[:, None, :, :]
     buf_exit = torch.gather(b_exp.expand(n, NCV, NMV, -1), 3, dd_e)[..., 0]
     m_next16 = (s_idx >= (dd_e-16).clamp_min(0)) & (s_idx < dd_e)
     cnt_n16 = m_next16.float().sum(-1)
@@ -1003,7 +1034,6 @@ def priv_features(prog, st, k):
     m_new16 = s_idx < dd_e.clamp_max(16)
     cnt_new16 = m_new16.float().sum(-1)
     buf_new16 = torch.where(cnt_new16 > 0, (b_exp*m_new16.float()).sum(-1)/cnt_new16.clamp_min(1.), buf_now[:, None, :])
-    # Differentiable Smith-predictor features & in-flight integrating-level pipe drift
     pend_exit = (K_mv*(buf_exit-mode_mv)).sum(-1)
     pend_n16 = (K_mv*(buf_n16-mode_mv)).sum(-1)
     pend_pipe = (K_mv*(buf_pipe-mode_mv)).sum(-1)
@@ -1012,21 +1042,21 @@ def priv_features(prog, st, k):
     err_inf = (err_b+pend_inf)*(1.-ig)*trk
     lev_pipe_drift = ((K_mv*((b_exp-mode_mv[..., None])*m_pipe.float()).sum(-1)).sum(-1)/tint)*ig
     lev_inf_rate = (lev_rate+pend_inf/tint)*ig
-    dist_eff = ((P['K'][:, :, NMV:].float()*st['d'][:, None, :].float()).sum(-1)+st['od'].float())/band*prc
+    dist_eff = ((P_K[:, :, NMV:].float()*st_d[:, None, :].float()).sum(-1)+st_od.float())/band*prc
     act_pair = (K_mv.abs() > 1e-4).float()
     max_dd_row = (dd_f*act_pair).amax(-1)/64.
     max_tau_row = (tau_p*act_pair).amax(-1)/64.
     cv_feat = torch.stack((
         symlog(err_b*trk),
-        symlog((yt-st['target'].float())/band*trk),
+        symlog((yt-st_target.float())/band*trk),
         symlog((yt-rref.float())/band*rst),
         symlog(ex_trk.clamp_min(-2.)),
         symlog(ex_zon.clamp(-5., 50.)),
-        symlog((v-c['vc'].float())/band*prc),
+        symlog((v-c_vc.float())/band*prc),
         symlog(lev_rate),
         symlog(fl/band*prc),
-        symlog((st['l1'].float()-fl)/band*prc),
-        symlog((st['l2'].float()-fl)/band*prc),
+        symlog((st_l1.float()-fl)/band*prc),
+        symlog((st_l2.float()-fl)/band*prc),
         symlog(pend_exit),
         symlog(pend_n16),
         symlog(pend_pipe),
@@ -1041,20 +1071,20 @@ def priv_features(prog, st, k):
         trk,
         zon,
         ig,
-        symlog(t['cvw'].float()*trk),
+        symlog(t_cvw.float()*trk),
     ), -1)*rowm[..., None]
-    span = (t['uhi']-t['ulo']).float().clamp_min(1e-6)
-    slew = c['slew'].float().clamp_min(1e-6)
-    u, ua, xv = st['u'].float(), st['ua'].float(), st['xv'].float()
+    span = (t_uhi-t_ulo).float().clamp_min(1e-6)
+    slew = c_slew.float().clamp_min(1e-6)
+    u, ua, xv = st_u.float(), st_ua.float(), st_xv.float()
     buf_4 = buf_mv[:, :4].mean(1)
     buf_16 = buf_mv[:, 4:16].mean(1)
     mv_feat = torch.stack((
-        2*(u-t['ulo'].float())/span-1.,
-        2*(ua-t['ulo'].float())/span-1.,
-        2*(xv-t['ulo'].float())/span-1.,
-        ((u-st['prev_u'].float())/slew).clamp(-2., 2.),
-        ((u-t['ulo'].float())/slew).clamp(-5., 50.)/10.,
-        ((t['uhi'].float()-u)/slew).clamp(-5., 50.)/10.,
+        2*(u-t_ulo.float())/span-1.,
+        2*(ua-t_ulo.float())/span-1.,
+        2*(xv-t_ulo.float())/span-1.,
+        ((u-st_prev_u.float())/slew).clamp(-2., 2.),
+        ((u-t_ulo.float())/slew).clamp(-5., 50.)/10.,
+        ((t_uhi.float()-u)/slew).clamp(-5., 50.)/10.,
         (slew/span).clamp(0., 2.),
         symlog((buf_now-buf_4)*5.),
         symlog((buf_4-buf_16)*5.),
@@ -1062,13 +1092,73 @@ def priv_features(prog, st, k):
     ), -1)*mvm[..., None]
     edge = torch.stack((
         symlog(K_mv),
-        c['link'][:, :, :NMV].float(),
+        c_link[:, :, :NMV].float(),
         dd_f/64.,
         tau_p/64.,
     ), -1)*rowm[:, :, None, None]*mvm[:, None, :, None]
-    # Pure Markov state globals (NO time-of-episode k_rem: prevents episode-end bootstrap self-amplification!)
-    g = torch.stack(((trk+zon).sum(-1)/float(max(NCV, 1)), st['fail'].float()), -1)
+    g = torch.stack(((trk+zon).sum(-1)/float(max(NCV, 1)), st_fail.float()), -1)
     return cv_feat, mv_feat, edge, rowm, mvm, g
+
+
+def enable_priv_compile(enabled=True, dynamic=False, cpu=False, backend='inductor'):
+    """Enable/disable `torch.compile` fusion for `priv_features()`."""
+    global _PRIV_COMPILE, _PRIV_COMPILE_CPU, _PRIV_COMPILED_PROG, _PRIV_COMPILED_CTX
+    _PRIV_COMPILE = bool(enabled)
+    _PRIV_COMPILE_CPU = bool(cpu)
+    if _PRIV_COMPILE:
+        torch._dynamo.config.cache_size_limit = max(getattr(torch._dynamo.config, 'cache_size_limit', 8), 64)
+        _PRIV_COMPILED_PROG = torch.compile(_priv_features_from_prog, dynamic=dynamic, backend=backend)
+        _PRIV_COMPILED_CTX = torch.compile(_priv_features_math_od, dynamic=dynamic, backend=backend)
+    else:
+        _PRIV_COMPILED_PROG = None
+        _PRIV_COMPILED_CTX = None
+    return _PRIV_COMPILE
+
+
+def priv_features(prog, st, k, *, P=None, t=None, phi=None):
+    """Differentiable privileged simulator state features at decision k (training-only Critic; never deployed).
+    Preserves exact autograd paths through true noiseless yt, v, fl, l1, l2, sr, si, dead-time-indexed delay
+    pipeline buf[0..dd], Smith-predictor ultimate error err_inf, integrating-level in-flight pipe drift, and
+    valve states u, ua, xv so moves made inside long dead times (dd up to 60) near the window boundary get
+    exact, aligned gradients with zero leak to expired slots s >= dd.
+    Optional `P, t, phi` reuse already-computed segment parameters/task/time-scale from the simulator step.
+    -> (cv_feat (n,NCV,PRIV_CV), mv_feat (n,NMV,PRIV_MV), edge (n,NCV,NMV,PRIV_EDGE), cm (n,NCV), mm (n,NMV), g (n,PRIV_G))."""
+    from aio.sim import core as C
+    from aio.sim.prior import HORIZON
+    global _PRIV_COMPILED_PROG, _PRIV_COMPILED_CTX
+    NCV, NMV = prog.ncv, prog.nmv
+    c = prog.c
+    k_cl = min(int(k), HORIZON-1)
+    use_c = (_PRIV_COMPILE if _PRIV_COMPILE is not None else C.is_sim_compiled())
+    allow_cpu = _PRIV_COMPILE_CPU or (bool(getattr(C, '_SIM_COMPILE_CPU', False)) if _PRIV_COMPILE is None else False)
+    if use_c and (prog.P.device.type == 'cuda' or allow_cpu):
+        if _PRIV_COMPILED_PROG is None:
+            kw = getattr(C, '_SIM_COMPILE_KW', None) or dict(dynamic=False, backend='inductor')
+            torch._dynamo.config.cache_size_limit = max(getattr(torch._dynamo.config, 'cache_size_limit', 8), 64)
+            _PRIV_COMPILED_PROG = torch.compile(_priv_features_from_prog, **kw)
+            _PRIV_COMPILED_CTX = torch.compile(_priv_features_math_od, **kw)
+        c_vals = tuple(c[q] for q in _PRIV_C_KEYS)
+        st_vals = tuple(st[q] for q in _PRIV_ST_KEYS)
+        if P is None and t is None and phi is None:
+            lay_p = tuple(prog.lay[q] for q in _PRIV_P_KEYS)
+            tlay_t = tuple(prog.tlay[q] for q in _PRIV_T_KEYS)
+            return _PRIV_COMPILED_PROG(prog._k_tensor(k_cl), NCV, NMV, lay_p, tlay_t, prog.P, prog.T, prog.seg_k, prog.ramp, prog.ar, c_vals, st_vals, st['od'])
+        if P is None or t is None:
+            seg = prog.seg_at(k_cl)
+            P = prog.params(seg, k_cl) if P is None else P
+            t = prog.task(seg) if t is None else t
+        P_vals = tuple(P[q] for q in _PRIV_P_KEYS)
+        t_vals = tuple(t[q] for q in _PRIV_T_KEYS)
+        return _PRIV_COMPILED_CTX(NCV, NMV, P_vals, t_vals, c_vals, st_vals, st['od'], phi)
+    if P is None or t is None:
+        seg = prog.seg_at(k_cl)
+        P = prog.params(seg, k_cl) if P is None else P
+        t = prog.task(seg) if t is None else t
+    P_vals = tuple(P[q] for q in _PRIV_P_KEYS)
+    t_vals = tuple(t[q] for q in _PRIV_T_KEYS)
+    c_vals = tuple(c[q] for q in _PRIV_C_KEYS)
+    st_vals = tuple(st[q] for q in _PRIV_ST_KEYS)
+    return _priv_features_math_od(NCV, NMV, P_vals, t_vals, c_vals, st_vals, st['od'], phi)
 
 
 class _PrivBlock(nn.Module):
@@ -1316,13 +1406,14 @@ def of_state(actor, pairs=None, config=None, device='cpu'):
     """AIO in eval mode from the state dicts of a run (`load`) or of a released file (release/huggingface): what
     the pair pathway has is read from its own entries. One from before the pair pathway (pairs None) leaves it
     at its start, where the network computes what the actor did; one without the running sums (from before
-    them, or trained with --no-stats) is run without them. config: the run's (`probe`, `unpaired`)."""
+    them, or trained with --no-stats) is run without them. config: the run's (`probe`, `unpaired`, `meter`)."""
     if pairs is not None and 'seq' in pairs:                      # the plain attention network (aio.seqnet): no pair pathway, its spec in `seq`
         from aio import seqnet as SQ
         asked, w = SQ.of_buffer(pairs['seq'])
         net = SQ.SeqAIO(asked, w, actor['read.2.weight'].shape[0])
         net.actor.load_state_dict(actor)
         net.probe, net.unpaired = float((config or {}).get('probe') or 0.), float((config or {}).get('unpaired') or 0.)
+        net.meter = bool((config or {}).get('meter', False))
         return net.to(device).eval()
     kw = dict(zip(('formula', 'solve'), worked_of(pairs)), knots=knots_of(pairs), law=law_of(pairs), tied=tied_of(pairs), given=given_of(pairs),
               slow=slow_of(pairs), arx=arx_of(pairs), dv=dv_of(pairs), diff=diff_of(pairs), unseen=unseen_of(pairs), told=told_of(pairs), reader=reader_of(pairs), apart=apart_of(pairs), hybrid=hybrid_of(pairs)) if pairs is not None else {}
@@ -1334,22 +1425,41 @@ def of_state(actor, pairs=None, config=None, device='cpu'):
         net.pairs.load_state_dict(pairs)
     net.probe = float((config or {}).get('probe') or 0.)          # a run with --probe: it runs with its own plant test (Policy)
     net.unpaired = float((config or {}).get('unpaired') or 0.)    # a run with --unpaired: it runs without the published pairing
+    net.meter = bool((config or {}).get('meter', False))          # a run with --meter: told validation uses metered teacher
     return net.to(device).eval()
+
+
+def safe_torch_load(path, map_location='cpu', weights_only=False):
+    """Load a torch checkpoint cleanly across Python 3.13+ (`pathlib._local`) and Windows/POSIX (`WindowsPath` <-> `PosixPath`)."""
+    import os
+    import pathlib
+    import sys
+    added_local = 'pathlib._local' not in sys.modules
+    local_mod = sys.modules.setdefault('pathlib._local', pathlib)
+    mods = (pathlib,) if local_mod is pathlib else (pathlib, local_mod)
+    saved = []
+    if os.name != 'nt':
+        for m in mods:
+            if hasattr(m, 'WindowsPath'):
+                saved.append((m, 'WindowsPath', m.WindowsPath))
+                m.WindowsPath = pathlib.PosixPath
+    else:
+        for m in mods:
+            if hasattr(m, 'PosixPath'):
+                saved.append((m, 'PosixPath', m.PosixPath))
+                m.PosixPath = pathlib.WindowsPath
+    try:
+        return torch.load(path, map_location=map_location, weights_only=weights_only)
+    finally:
+        for m, attr, orig in saved:
+            setattr(m, attr, orig)
+        if added_local and sys.modules.get('pathlib._local') is pathlib:
+            sys.modules.pop('pathlib._local', None)
 
 
 def load(path, device='cpu'):
     """(AIO in eval mode, checkpoint dict) of a .pt file of any AIO run (`of_state`)."""
-    import os
-    import pathlib
-    import sys
-    sys.modules.setdefault('pathlib._local', pathlib)             # Python 3.13+ checkpoints loaded on Python <=3.12
-    saved = pathlib.WindowsPath
-    if os.name != 'nt':                                           # a checkpoint written on Windows carries a WindowsPath
-        pathlib.WindowsPath = pathlib.PureWindowsPath
-    try:
-        ck = torch.load(path, map_location='cpu', weights_only=False)
-    finally:
-        pathlib.WindowsPath = saved
+    ck = safe_torch_load(path, map_location='cpu')
     return of_state(ck['model']['actor'], ck['model'].get('pairs'), ck.get('config'), device), ck
 
 

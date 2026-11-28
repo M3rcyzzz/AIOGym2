@@ -369,11 +369,25 @@ def derive(p):
 
 # ---------------------------------------------------------------- one plant
 SMALL = dict(nm=(2, 3), nr=(0, 0))            # a shape: two or three valves, none to spare
+_SHAPE_PROBS = ('stock', 'cls_p', 'sep_p', 'integ_p')
+
+
+def _arch_p(shape):
+    """Archetype probabilities, optionally overriding P(arch == SEP) smoothly before sampling."""
+    if not shape or 'sep_p' not in shape:
+        return ARCH_P
+    sp = float(shape['sep_p'])
+    assert 0. <= sp <= 1., f'sep_p must be in [0, 1], got {sp}'
+    rest = sum(p for i, p in enumerate(ARCH_P) if i != SEP)
+    scale = (1.-sp)/rest
+    return tuple(sp if i == SEP else p*scale for i, p in enumerate(ARCH_P))
 
 
 def draw_roots(r, m, dims=DIMS, shape=None):
     """What everything else about a unit depends on. shape: {root: (lo, hi)}, the roots kept to a range (counts
-    outside it are folded in, the others cut to it); the draws are the usual ones."""
+    outside it are folded in, the others cut to it), plus optional smooth pre-sampling probability overrides
+    (`stock`, `cls_p` 3-tuple for dead-time class, `sep_p` float for SEP archetype, `integ_p` float for levels);
+    when absent, the draws are bit-identical to the defaults."""
     NCV, NMV, ND, NQ, NDQ, NU = sizes_of(*dims)
     if tuple(dims) == DIMS:
         nm = r.cat(m, NM_P)+1
@@ -389,9 +403,14 @@ def draw_roots(r, m, dims=DIMS, shape=None):
         nr = torch.where(r.bern(ECON_P, m), torch.minimum((r.u(m, lo=ECON_SHARE[0], hi=ECON_SHARE[1])*nm).ceil().long(), nm-1), torch.zeros_like(nm))
         hs = torch.where(r.bern(THIN_P, m), r.u(m, lo=THIN_SHARE[0], hi=THIN_SHARE[1]), torch.zeros(m, dtype=F, device=r.dev))
     T = r.logu(m, lo=T_RANGE[0], hi=T_RANGE[1])                  # the unit's time scale (decisions)
-    cls = r.cat(m, (.4, .4, .2))                                 # lag dominant, balanced, dead-time dominant
+    if shape and 'cls_p' in shape:
+        cls_p = tuple(float(x) for x in shape['cls_p'])
+        assert len(cls_p) == 3 and all(x >= 0. for x in cls_p) and sum(cls_p) > 0., f'cls_p must be 3 non-negative probs, got {cls_p}'
+    else:
+        cls_p = (.4, .4, .2)
+    cls = r.cat(m, cls_p)                                        # lag dominant, balanced, dead-time dominant
     rth = torch.where(cls == 0, r.logu(m, lo=RTH[0][0], hi=RTH[0][1]), torch.where(cls == 1, r.logu(m, lo=RTH[1][0], hi=RTH[1][1]), r.logu(m, lo=RTH[2][0], hi=RTH[2][1])))
-    arch = r.cat(m, ARCH_P)
+    arch = r.cat(m, _arch_p(shape))
     linear = r.bern(.3, m)                                       # no valve, output or friction nonlinearity (identified-model-like)
     rich = r.bern(.6, m)                                         # pair shapes beyond first order
     geo = torch.where(r.bern(GEO_P, m), r.logu(m, lo=GEO[0], hi=GEO[1]), torch.zeros(m, dtype=F, device=r.dev))
@@ -403,9 +422,9 @@ def draw_roots(r, m, dims=DIMS, shape=None):
         ro['hs'] = hs
     if shape and 'stock' in shape:                              # (drawn only where asked: the other batches are as they were, bit for bit)
         ro['stock'] = r.bern(float(shape['stock']), m)
-        shape = {q: v for q, v in shape.items() if q != 'stock'}
-    if shape:
-        for q, (lo, hi) in shape.items():
+    bounds = {q: v for q, v in shape.items() if q not in _SHAPE_PROBS} if shape else None
+    if bounds:
+        for q, (lo, hi) in bounds.items():
             ro[q] = lo+(ro[q]-lo) % (hi-lo+1) if ro[q].dtype == torch.long else ro[q].clamp(lo, hi)
         ro['nr'] = torch.minimum(ro['nr'], ro['nm']-1)
         ro['nz'] = torch.minimum(ro['nz'], NCV-ro['nm']-ro['nd'])
@@ -608,7 +627,7 @@ def draw_plant(r, m, roots=None, dims=DIMS, shape=None):
         rb = torch.where(ar[None] < nm[:, None], torch.cat((blk, blk.new_zeros(m, NCV-NMV)), 1), anyb(NCV))
         feed = (torch.arange(NDQ, device=dev) == 0) | (torch.arange(NDQ, device=dev) == ND)
         cb = torch.cat((blk, torch.where(feed[None], torch.zeros_like(nb), anyb(NDQ))), 1)       # (m, NU) unit of every input
-        a3 = torch.gather(r.cat(m, ARCH_P, NMV), 1, blk)[:, None, :]
+        a3 = torch.gather(r.cat(m, _arch_p(shape), NMV), 1, blk)[:, None, :]
         gap = ab[:, None]-ab[None]                                                               # places the row's unit is downstream of the input's
         fade = DOWN_FADE**(gap.clamp_min(1)-1).to(F)
         pu = U(m, NMV, NMV)
@@ -713,7 +732,12 @@ def draw_plant(r, m, roots=None, dims=DIMS, shape=None):
     rstf = rst.to(F)
     units = dict(unit=torch.gather(rb, 1, perm).to(F), unitc=cb.to(F)) if multi else {}             # the unit of every row and of every input
     # ---- rows
-    integ = trk*r.bern(.15, m, NCV).to(F)*(1-rstf)
+    if shape and 'integ_p' in shape:
+        integ_p = float(shape['integ_p'])
+        assert 0. <= integ_p <= 1., f'integ_p must be in [0, 1], got {integ_p}'
+    else:
+        integ_p = .15
+    integ = trk*r.bern(integ_p, m, NCV).to(F)*(1-rstf)
     tint = LU(m, NCV, lo=20., hi=200.)
     lam = torch.where(r.bern(.3, m, NCV), U(m, NCV, lo=.05, hi=.3), torch.zeros(m, NCV, dtype=F, device=dev))*integ
     vc = U(m, NCV, lo=.3, hi=.7)
@@ -1592,7 +1616,7 @@ def draw_start(r, n, rounds=60, cand=4, dims=DIMS, shape=None):
         if bad.numel() == 0:
             break
         nb, rb = bad.numel(), r.sub(bad, repeat=cand)
-        pn, tn, _ = draw_plant(rb, nb*cand, {q: v[bad].repeat_interleave(cand) for q, v in ro.items()}, dims)
+        pn, tn, _ = draw_plant(rb, nb*cand, {q: v[bad].repeat_interleave(cand) for q, v in ro.items()}, dims, shape=shape)
         okc, infc = operable(pn, tn)
         okc = (okc & _paired(rb, pn, infc, okc)).view(nb, cand)
         pick = torch.arange(nb, device=r.dev)*cand+okc.to(F).argmax(1)
@@ -1644,7 +1668,7 @@ def pacing(mix, menu):
     return mix, (menu.pace*dens).clamp_min(1e-9), none | (menu.pace <= 0)
 
 
-def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, nseg=NSEG, shape=None):
+def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, nseg=NSEG, shape=None, event_r=None):
     """Start plants, targets and the event schedule of n episodes: lists over segments of the plant dicts,
     targets and steady points, the start decision of each segment (BIG when unused), the event kind that
     opened it (-1: none), the teacher's renewal delay, and over how many decisions the plant and the
@@ -1659,10 +1683,12 @@ def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, 
     keep: a dict that takes this window's tail. menu: what changes in this window (Menu); nseg: segments a
     window can have (a menu with events that come faster needs more than NSEG); shape: the plants' roots kept
     to a range (draw_roots; SMALL: two or three valves, none to spare).
+    event_r: optional separate Rng for the event schedule while `r` draws only plant dynamics (`draw_start`).
     Menu.shift: a unit chosen for it has, at its first ordinary event of the window, a heavy change that stays:
     the event is a process event of that kind alone (never taken back, never replaced by an excursion), and
     the tail's `mend` (what maintenance puts back) takes the gains and time constants it made."""
     dev = r.dev
+    er = r if event_r is None else event_r
     seg_k = torch.full((n, nseg), BIG, dtype=torch.long, device=dev)
     kinds = torch.full((n, nseg), -1, dtype=torch.long, device=dev)
     delay = torch.zeros(n, nseg, dtype=torch.long, device=dev)
@@ -1684,7 +1710,7 @@ def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, 
         seg_k[:, 0] = 0
         before, before_m, last_m = (p, tgt, info), (lz-1, lz-1, lz, lz), (lz, lz-1, lz, lz)
     else:
-        r.bind(n)
+        er.bind(n)
         base, before, (p, tgt, info) = tail['base'], tail['before'], tail['cur']
         segs, tgts, infos = [base[0], before[0], p], [base[1], before[1], tgt], [base[2], before[2], info]
         before_m, last_m = tuple(x.clone() for x in tail['before_m']), tuple(x.clone() for x in tail['last_m'])
@@ -1692,7 +1718,7 @@ def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, 
         for j, m in ((1, before_m), (2, last_m)):
             seg_k[:, j], kinds[:, j], delay[:, j], ramp[:, j] = m
         seg_k[:, 0] = seg_k[:, 1]-1
-    mix = event_kinds(r, p, menu=menu)
+    mix = event_kinds(er, p, menu=menu)
     if menu is not None:
         mix, speed, none = pacing(mix, menu)
     ts = settling(p)                                             # how long this unit takes to settle
@@ -1700,7 +1726,7 @@ def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, 
     thin = held(p).any(-1)                                       # plants with more setpoints than MVs: every event is drawn on the plant with those MVs free (`home`), then they are held again
     anythin = bool(thin.any())                                   # (as Menu.ride does at a constrained point; here for good: such a plant has no other home)
     if tail is None:
-        k = r.randint(FIRST_EVENT[0], FIRST_EVENT[1], n)
+        k = er.randint(FIRST_EVENT[0], FIRST_EVENT[1], n)
         away = torch.zeros(n, dtype=torch.bool, device=dev)      # the unit is at a constrained point
         home = (p, tgt, info)                                    # where it comes back to
         nsp = lz.clone()                                         # setpoint moves so far (whose turn it is)
@@ -1715,7 +1741,7 @@ def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, 
     if ride > 0 and cause is None:
         cause = cause_of(p, tgt, p, tgt)
     mend = segs[0] if tail is None else tail.get('mend') or segs[0]     # what maintenance puts back: the plant as commissioned, or what a heavy change that stayed made of it
-    todo = r.bern(float(menu.shift), n) if menu is not None and menu.shift > 0 else None    # units that have such a change in this window (Menu.shift), at their first ordinary event
+    todo = er.bern(float(menu.shift), n) if menu is not None and menu.shift > 0 else None    # units that have such a change in this window (Menu.shift), at their first ordinary event
     heavy = menu is not None and (menu.heavy > 0 or menu.shift > 0)
     pick = lambda c, x, y: torch.where(c.view(-1, *([1]*(x.dim()-1))), x, y)          # noqa: E731
     picks = lambda c, xs, ys: tuple({key: pick(c, x[key], y[key]) for key in x} if isinstance(x, dict) else pick(c, x, y) for x, y in zip(xs, ys))   # noqa: E731
@@ -1723,7 +1749,7 @@ def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, 
         exists = k < HORIZON-30
         if menu is not None:
             exists = exists & ~none
-        kind = r.cat_rows(mix)
+        kind = er.cat_rows(mix)
         ok = torch.zeros(n, dtype=torch.bool, device=dev)
         hit = torch.zeros(n, dtype=torch.bool, device=dev)      # this event is the heavy change that stays
         if todo is not None:
@@ -1733,7 +1759,7 @@ def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, 
         on = ok                                                  # at a constrained point to stay: this event is an ordinary one too
         src, hn = (p, tgt, info), home
         if ride > 0:
-            on = away & riding & exists & r.bern(ride, n)
+            on = away & riding & exists & er.bern(ride, n)
         if anythin:
             on = on | (thin & exists)
         if ride > 0 or anythin:
@@ -1742,8 +1768,8 @@ def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, 
             need = exists & ~ok & (~away | on)
             if not bool(need.any()):
                 break
-            with r.only(need):                                    # the streams of the others stand still
-                pc, tc, big = draw_event(r, src[0], src[2], src[1], kind, torch.full((n,), a, dtype=F, device=dev), None if tail is None else mend,
+            with er.only(need):                                    # the streams of the others stand still
+                pc, tc, big = draw_event(er, src[0], src[2], src[1], kind, torch.full((n,), a, dtype=F, device=dev), None if tail is None else mend,
                                          menu, nsp if menu is not None and menu.turn else None, segs[0] if heavy else None, hit if todo is not None else None)
             okc, infc = operable(pc, tc)
             take = need & okc & big
@@ -1775,12 +1801,12 @@ def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, 
         out = torch.zeros(n, dtype=torch.bool, device=dev)
         gone = out                                               # a disturbance or process event the next event takes back
         if menu is not None and menu.pulse > 0:
-            gone = ok & ((kind == LOAD) | (kind == DV) | (kind == PROC)) & r.bern(menu.pulse, n) & ~rode & ~hit
-        idx = (exists & ~away & ~gone & ~hit & r.bern(exc_p, n)).nonzero().flatten() if e < nseg-1 else out.nonzero().flatten()   # a slot is left to come back in
+            gone = ok & ((kind == LOAD) | (kind == DV) | (kind == PROC)) & er.bern(menu.pulse, n) & ~rode & ~hit
+        idx = (exists & ~away & ~gone & ~hit & er.bern(exc_p, n)).nonzero().flatten() if e < nseg-1 else out.nonzero().flatten()   # a slot is left to come back in
         for _ in range(EXC_TRIES):
             if idx.numel() == 0:
                 break
-            px, tx, infx, kx, okx = draw_excursion(r.sub(idx), {key: v[idx] for key, v in p.items()}, {key: v[idx] for key, v in info.items()}, tgt[idx])
+            px, tx, infx, kx, okx = draw_excursion(er.sub(idx), {key: v[idx] for key, v in p.items()}, {key: v[idx] for key, v in info.items()}, tgt[idx])
             got = idx[okx]
 
             def put(x, y):                                        # y's valid rows into a copy of x
@@ -1815,11 +1841,11 @@ def draw_episode(r, n, exc_p=EXC_P, dims=DIMS, tail=None, keep=None, menu=None, 
         segs.append(p); tgts.append(tgt); infos.append(info)
         seg_k[:, e] = torch.where(exists, k, torch.full_like(k, BIG))
         kinds[:, e] = torch.where(ok, kind, torch.full_like(kind, -1))
-        delay[:, e] = r.randint(RENEW[0], RENEW[1], n)
-        gap = (glo+(ghi-glo)*r.u(n)).floor().long()
+        delay[:, e] = er.randint(RENEW[0], RENEW[1], n)
+        gap = (glo+(ghi-glo)*er.u(n)).floor().long()
         if menu is not None:
             gap = down(gap/speed).long().clamp_min(MIN_GAP)
-        ramp[:, e] = torch.where(r.bern(RAMP_P, n), torch.minimum(r.logu(n, lo=5., hi=120.), .8*gap).long(), torch.zeros_like(gap))
+        ramp[:, e] = torch.where(er.bern(RAMP_P, n), torch.minimum(er.logu(n, lo=5., hi=120.), .8*gap).long(), torch.zeros_like(gap))
         travel = ((info['un']-infos[-2]['un']).abs()/p['slew']*p['mvm']).amax(-1)      # decisions the valves need at full slew
         gap = torch.maximum(gap, down(TRAVEL*travel+.5*glo/(1. if menu is None else speed)).long())     # an event is not cut short by the next one (rule 3)
         stay = down(lineout(p, infos[-2], info, ramp[:, e])+STAY*ts).long()           # a constrained point is reached and held

@@ -105,7 +105,7 @@ class Program:
     """n episodes, fixed before the first step. Tensors are on `device`, float32 (float64 on request)."""
 
     def __init__(self, r, n, device=None, dtype=torch.float32, teacher=True, seed=0, quiet=False, exc_p=PR.EXC_P, mech=0., plants=None, dims=PR.DIMS,
-                 after=None, menu=None, nseg=NSEG, shape=None, blind=False):
+                 after=None, menu=None, nseg=NSEG, shape=None, blind=False, event_seed=None):
         """after: the `tail` of the Program of the window before (or that Program); this one is the next HORIZON
         decisions on the same plants (`Program.next`, `build(n, seed, after=tail)`): the plants, their
         instruments and what wanders around them stay, the last two segments are carried with the plant as
@@ -116,7 +116,9 @@ class Program:
         can have (events that come faster than usual need more than NSEG). shape: the linear plants' roots kept to
         a range (prior.draw_roots; prior.SMALL). blind: the packet leaves out the measured disturbances (the
         same seed with and without: the same plants, events and noise, once with the disturbances measured and
-        once not; the flag can also be set on a Program that is there)."""
+        once not; the flag can also be set on a Program that is there).
+        event_seed: optional separate seed for event schedule, initial off-steady draw, and step noise while
+        `seed` draws plant dynamics (None: bit-identical single-seed RNG)."""
         dims = PR.SIZES[dims] if isinstance(dims, str) else tuple(dims)
         after = after.tail if isinstance(after, Program) else after
         if after is not None:
@@ -133,9 +135,15 @@ class Program:
         self.nl, self.mech = n-nmech, None
         rl, rm, r = r.fork(), r.fork(), r.fork()                  # streams of the linear episodes, of the mechanistic ones, of the field layer and the start (all n)
         self.gen, lin = r.dev, {}
+        self.event_seed = event_seed
+        if event_seed is not None:
+            re = PR.Rng(event_seed, self.gen)
+            rel_ev, r_ev = re.fork(), re.fork()
+        else:
+            rel_ev, r_ev = None, r
         self.s0 = s0 = 0 if after is None else PR.CARRIED-1         # the segment in force at decision 0
         self.nseg, self.menu, self.blind = nseg, menu, blind
-        draw = PR.draw_episode(rl, n-nmech, exc_p, dims, tail=after['lin'] if after is not None else None, keep=lin, menu=menu, nseg=nseg, shape=shape) if n > nmech else None
+        draw = PR.draw_episode(rl, n-nmech, exc_p, dims, tail=after['lin'] if after is not None else None, keep=lin, menu=menu, nseg=nseg, shape=shape, event_r=rel_ev) if n > nmech else None
         if nmech:
             md, self.mech = ME.draw(rm, nmech, plants, exc_p, dims=dims, after=after['mech'] if after is not None else None, menu=menu, nseg=nseg)
             draw = ME.join(draw, md)
@@ -195,12 +203,13 @@ class Program:
         c['zrow'], c['zslot'] = c['zrow'].to(dev), zon.to(dev)
         self.c = c
         self.ar = torch.arange(n, device=dev)
+        self._ks = torch.arange(HORIZON+4, device=dev, dtype=torch.long)
         # start: the steady point of segment 0, half the episodes off it (inputs, and integrating levels)
         un, v = infos[s0]['un'], infos[s0]['v']
         if after is None:
-            off = r.bern(0. if quiet else .5, n)[:, None]
-            u0 = torch.where(off, torch.minimum(torch.maximum(un+r.u(n, NMV, lo=-.15, hi=.15), p0['ulo']), p0['uhi']), un)*p0['mvm']
-            v0 = torch.where(off & (p0['integ'] > 0) & (p0['mech'] == 0)[:, None], v+p0['bandf']*r.u(n, NCV, lo=-5., hi=5.), v)
+            off = r_ev.bern(0. if quiet else .5, n)[:, None]
+            u0 = torch.where(off, torch.minimum(torch.maximum(un+r_ev.u(n, NMV, lo=-.15, hi=.15), p0['ulo']), p0['uhi']), un)*p0['mvm']
+            v0 = torch.where(off & (p0['integ'] > 0) & (p0['mech'] == 0)[:, None], v+p0['bandf']*r_ev.u(n, NCV, lo=-5., hi=5.), v)
         else:                                                     # (run on its own, without the state of the window before: from rest)
             u0, v0 = un*p0['mvm'], v
         self.start = dict(un=to(un), u=to(u0), v=to(v0), ue=to(infos[s0]['ue']), tgt=to(tgts[s0]))
@@ -211,7 +220,7 @@ class Program:
         for g in self.mg:
             mx[g['idx'], :g['m'].nx] = g['x0']
         self.start['mx'] = mx
-        self.seed = int(seed)+90_001
+        self.seed = int(seed if event_seed is None else event_seed)+90_001
         self.g = torch.Generator(); self.g.manual_seed(self.seed)                  # on the CPU: the same episodes on every device
         self.Fr, self.meter = None, None
         if teacher:
@@ -453,6 +462,18 @@ class Program:
         assert knots in (MD.NLAB, max(MD.KNOTS))
         return (self.lab if knots == MD.NLAB else self.labw)[self.ar, self.seg_at(k)]
 
+    def _k_tensor(self, k):
+        """0-D int64 tensor for decision `k` on `self.P.device` (O(1) slice, zero H2D copy for k <= HORIZON+3)."""
+        dev = self.P.device
+        ks = getattr(self, '_ks', None)
+        if ks is None or ks.device != dev:
+            ks = torch.arange(HORIZON+4, device=dev, dtype=torch.long)
+            self._ks = ks
+        ki = int(k)
+        if 0 <= ki < ks.shape[0]:
+            return ks[ki]
+        return torch.tensor(ki, device=dev, dtype=torch.long)
+
     def noise(self):
         """Random draws of one step (own generator, so an episode is reproducible; drawn on the CPU, so it is
         the same episode on every device)."""
@@ -460,11 +481,37 @@ class Program:
         u = torch.rand(self.n, self.nuni, generator=self.g, dtype=self.dtype)
         return z.to(self.device), u.to(self.device)
 
+    def prefetch_noise(self, k0=0, H=None, dev=None):
+        """Pre-generate `H` steps of `(z, u)` noise on CPU in one pinned buffer and transfer asynchronously to `dev`.
+        100% bit-identical to calling `noise()` `H` times in sequence (leaving `self.g` in the exact same state).
+        Accepts `(k0, H, dev=None)` or `(H, dev=None)` or `(H=...)`."""
+        if H is None:
+            H = int(k0)
+        elif isinstance(H, (str, torch.device)):
+            dev, H = H, int(k0)
+        else:
+            H = int(H)
+        dev = self.device if dev is None else torch.device(dev)
+        if H <= 0:
+            return (torch.empty((0, self.n, self.nnorm), dtype=self.dtype, device=dev),
+                    torch.empty((0, self.n, self.nuni), dtype=self.dtype, device=dev))
+        nz, nu = H*self.n*self.nnorm, H*self.n*self.nuni
+        pin = dev.type == 'cuda' and torch.cuda.is_available()
+        flat = torch.empty(nz+nu, dtype=self.dtype, pin_memory=pin)
+        z_cpu = flat[:nz].view(H, self.n, self.nnorm)
+        u_cpu = flat[nz:].view(H, self.n, self.nuni)
+        for j in range(H):
+            torch.randn((self.n, self.nnorm), generator=self.g, dtype=self.dtype, out=z_cpu[j])
+            torch.rand((self.n, self.nuni), generator=self.g, dtype=self.dtype, out=u_cpu[j])
+        flat_d = flat.to(dev, non_blocking=pin)
+        return flat_d[:nz].view(H, self.n, self.nnorm), flat_d[nz:].view(H, self.n, self.nuni)
 
-def build(n, seed=0, device='cpu', gen_device='cpu', **kw):
+
+def build(n, seed=0, device='cpu', gen_device='cpu', event_seed=None, **kw):
     """A fresh batch of n episodes. The draw runs on gen_device (float64) and is moved to device.
-    after=tail (a Program's `tail`): the next window on the same plants instead (the seed gives its events and noise)."""
-    return Program(PR.Rng(seed, gen_device), n, device=device, seed=seed, **kw)
+    after=tail (a Program's `tail`): the next window on the same plants instead (the seed gives its events and noise).
+    event_seed: optional separate seed for events/initial offset/step noise while `seed` draws plant dynamics."""
+    return Program(PR.Rng(seed, gen_device), n, device=device, seed=seed, event_seed=event_seed, **kw)
 
 
 # ---------------------------------------------------------------- state
@@ -540,11 +587,237 @@ def resume(prog, st):
     return st
 
 
-# ---------------------------------------------------------------- packet
-def observe(prog, st, k):
+# ---------------------------------------------------------------- packet & compiled pure-tensor simulator
+_OBS_T_KEYS = ('scale', 'plo', 'phi', 'cvw', 'ulo', 'uhi')
+_OBS_C_KEYS = ('rowm', 'dvr', 'trk', 'an_T', 'dt', 'mvm', 'slew', 'psign', 'link')
+_OBS_ST_KEYS = ('target', 'y', 'bad', 'prev_y', 'age', 'last_target', 'u', 'prev_u')
+
+_STEP_C_KEYS = ('mvm', 'mvf', 'slew', 'aa', 'ou_a', 'ou_s', 'sin_amp', 'sin_w', 'sin_ph', 'dact',
+                'jload', 'uref', 'kap', 'warp', 'od_a', 'od_s', 'od_l', 'bias', 'nlag', 'lam', 'vc',
+                'tint', 'integ', 'dvr', 'dvsel', 'rowm', 'as', 'cn_a', 'cn_s', 'nw', 'quant', 'an_T',
+                'an_ph', 'spike', 'sband', 'bad', 'prc', 'bandf', 'trk', 'rst', 'zon')
+_STEP_ST_KEYS = ('u', 'ua', 'xv', 'ou', 'buf', 'sr', 'si', 'odr', 'od', 'l1', 'l2', 'v', 'mx', 'fail',
+                 'ys', 'cn', 'held', 'pend', 'age', 'bad', 'last', 'y', 'target',
+                 'thist', 'rhist', 'alo', 'ahi', 'lo', 'hi')
+_NEW_ST_KEYS = ('u', 'prev_u', 'ua', 'xv', 'buf', 'sr', 'si', 'l1', 'l2', 'v', 'ou', 'd', 'odr', 'od',
+                'ys', 'cn', 'held', 'pend', 'age', 'bad', 'last', 'y', 'prev_y', 'yt', 'fl',
+                'target', 'last_target', 'thist', 'rhist', 'alo', 'ahi', 'lo', 'hi', 'fail', 'mx')
+_OUT_KEYS = ('cost', 'soft', 'track', 'zone', 'move', 'err', 'erc', 'viol', 'ref', 'fail',
+             'alo', 'ahi', 'zlo', 'zhi', 'outside', 'trip')
+
+_SIM_COMPILE = False
+_SIM_COMPILE_CPU = False
+_SIM_COMPILE_KW = {}
+_OBS_COMPILED = None
+_STEP_COMPILED = None
+
+
+def _observe_pure(k_t, seg_k, ar, T_flat, tlay_obs, blind, c_obs, st_obs):
+    n = ar.shape[0]
+    seg = (seg_k <= k_t).sum(1)-1
+    Tf = T_flat[ar, seg]
+    s, plo, phi, cvw, ulo, uhi = (Tf[:, a:b].reshape(n, *sh) for a, b, sh in tlay_obs)
+    rowm, dvr, trk, an_T, dt, mvm, slew, psign, link = c_obs
+    tgt, y, bad_v, prev_y, age, last_target, u, prev_u = st_obs
+    bad = bad_v > 0
+    zero, one = torch.zeros_like(y), torch.ones_like(y)
+    rm = rowm*(1-dvr) if blind else rowm
+    cv = torch.stack((torch.where(bad, zero, (y-tgt)/s), torch.where(bad, zero, (y-prev_y)/s),
+                      (plo-tgt)/s, (phi-tgt)/s, 1-dvr, cvw, trk, torch.where(bad, zero, one),
+                      torch.where(an_T > 0, torch.log1p(age), zero), (torch.log1p(dt)/10)[:, None].expand_as(y),
+                      (tgt-last_target)/s, one), -1)*rm[..., None]
+    span = (uhi-ulo).clamp_min(1e-9)
+    mv = torch.stack((2*(u-ulo)/span-1, 2*(u-prev_u)/span, 2*torch.minimum(slew, span)/span, -torch.ones_like(u), psign,
+                      torch.ones_like(u)), -1)*mvm[..., None]
+    links = link*rm[:, :, None]
+    return torch.cat((cv.flatten(1), mv.flatten(1), links.flatten(1)), -1)
+
+
+def _step_pure(k_t, a, z, uu, through, stops, dims, lay_items, tlay_items, P_flat, T_flat, seg_k, ramp, hold_k, ar, c_step, st_step):
+    NCV, NMV, ND, NQ, NDQ, NU = dims
+    n = ar.shape[0]
+    (mvm, mvf, sl, aa, ou_a, ou_s, sin_amp, sin_w, sin_ph, dact,
+     jload, uref, kap, warp, od_a, od_s, od_l, bias, nlag, lam, vc,
+     tint, integ, dvr, dvsel, rowm, a_s, cn_a, cn_s, nw, q_step, an_T,
+     an_ph, spike, sband, bad_p, prc, band, trk, rst_f, zon) = c_step
+    (u0, ua0, xv0, ou0, buf0, sr0, si0, odr0, od0, l1_0, l2_0, v0, mx, fail0,
+     ys0, cn0, held0, pend0, age0, sbad, last0, y0, tgt0,
+     thist0, rhist0, alo0, ahi0, lo0, hi0) = st_step
+
+    seg = (seg_k <= k_t).sum(1)-1
+    P1 = P_flat[ar, seg]
+    w_r = ((k_t+1-seg_k[ar, seg])/ramp[ar, seg].clamp_min(1.)).clamp(0., 1.)[:, None]
+    P0 = P_flat[ar, (seg-1).clamp_min(0)]
+    Pf = P0+w_r*(P1-P0)
+    P = {q: Pf[:, a0:b0].reshape(n, *sh) for q, a0, b0, sh in lay_items}
+    Tf = T_flat[ar, seg]
+    t = {q: Tf[:, a0:b0].reshape(n, *sh) for q, a0, b0, sh in tlay_items}
+
+    zq, zw, zc, zo = z[:, :NDQ], z[:, NDQ:NDQ+NCV], z[:, NDQ+NCV:NDQ+2*NCV], z[:, NDQ+2*NCV:]
+    u1, u2, u3, u4 = uu[:, :NCV], uu[:, NCV:2*NCV], uu[:, 2*NCV:3*NCV], uu[:, 3*NCV:]
+
+    uc = u0+a*sl*mvm
+    ut = torch.minimum(torch.maximum(uc, t['ulo']), t['uhi'])
+    u = u0+torch.minimum(torch.maximum(ut-u0, -sl), sl)*mvm
+    if through:
+        u = uc+(u-uc).detach()
+    ua = aa*ua0+(1-aa)*u
+    dl = ua-xv0
+    xv = torch.where(dl.abs() > P['fs'], ua-torch.sign(dl)*P['fd'], xv0).clamp(0., 1.)
+    if through:
+        xv = ua+(xv-ua).detach()
+    ue = xv.clamp_min(1e-6)**P['gam']*mvf
+
+    ou = ou_a*ou0+ou_s*zq
+    d = (P['dlev']+ou+sin_amp*torch.sin(sin_w*(k_t+1)+sin_ph)).clamp(-1.5, 1.5)*dact
+    w = torch.cat((ue, d), 1)
+    buf = torch.cat((w[:, None], buf0[:, :-1]), 1)
+
+    load = torch.gather(torch.cat((xv, (d[:, :ND]+1)/2), 1), 1, jload[:, None])[:, 0].clamp(0., 1.)
+    w_phi = ((load+.25)/(uref+.25))**kap
+    phi = torch.where(warp > 0, w_phi, torch.ones_like(w_phi)).clamp(.4, 2.5)
+    e = phi[:, None, None]
+    dd = (P['dead']/e).round().clamp(0, DMAX).long()
+    ud = torch.gather(buf.transpose(1, 2)[:, None].expand(n, NCV, NU, DMAX+1), 3, dd[..., None])
+    m0, m1 = torch.exp(P['p1r']*e), torch.exp(P['p2r']*e)
+    lr = torch.stack((m0*torch.cos(P['p1i']*e), m1*torch.cos(P['p2i']*e)), -1)
+    li = torch.stack((m0*torch.sin(P['p1i']*e), m1*torch.sin(P['p2i']*e)), -1)
+    sr = lr*sr0-li*si0+(1-lr)*ud
+    si = lr*si0+li*sr0-li*ud
+    cr = torch.stack((P['c0r'], P['c1r']), -1); ci = torch.stack((P['c0i'], P['c1i']), -1)
+    mode = (cr*sr-ci*si).sum(-1)
+
+    odr = od_a*odr0+od_s*zo
+    od = od_l*od0+(1-od_l)*odr
+    km = P['K']*mode
+    fast = km.sum(-1)+bias+od
+    al = torch.exp(-phi[:, None]/P['tlag'])
+    bl = 1-al
+    l1 = al*l1_0+bl*fast
+    l2 = al*l2_0+bl*l1
+    fl = torch.where(nlag == 0, fast, torch.where(nlag == 1, l1, l2))
+    vr = v0+(fl+lam*(v0-vc))/tint
+    vs = vr.clamp(*LEV_STOP)
+    if stops:
+        vs = vr+(vs-vr).detach()
+    v = torch.where(integ > 0, vs, fl)
+    bad_x = ~torch.isfinite(v).all(-1) | (v.abs() > 50).any(-1) | ~torch.isfinite(sr).flatten(1).all(-1) | ~torch.isfinite(mx).all(-1)
+    mx = mx.nan_to_num(0., 0., 0.)
+    fail = fail0 | bad_x
+    v = v.clamp(-60., 60.).nan_to_num(0., 0., 0.)
+    sr = sr.nan_to_num(0., 0., 0.)
+    si = si.nan_to_num(0., 0., 0.)
+    l1 = l1.nan_to_num(0., 0., 0.)
+    l2 = l2.nan_to_num(0., 0., 0.)
+    fl = fl.nan_to_num(0., 0., 0.)
+
+    yt_h = PR.h(v, P['wa'])
+    yt = torch.where(dvr > 0, torch.gather(d[:, :ND], 1, dvsel), yt_h)*rowm
+
+    f = yt.dtype
+    ys = a_s*ys0+(1-a_s)*yt
+    cn = cn_a*cn0+cn_s*zc
+    ym = ys+nw*zw+cn
+    ym = torch.where(q_step > 0, ym+(torch.round(ym/q_step.clamp_min(1e-9))*q_step-ym).detach(), ym)
+    an = an_T > 0
+    tick = an & (torch.remainder(k_t+1+an_ph, an_T.clamp_min(1.)) == 0)
+    held = torch.where(tick, pend0, held0)
+    pend = torch.where(tick, ym, pend0)
+    age = torch.where(tick, an_T, age0+an.to(f))
+    ym = torch.where(an, held, ym)
+    ym = torch.where(u1 < spike, ym+sband*(3+5*u2)*torch.sign(u3-.5), ym)
+    bad = torch.where((sbad <= 0) & (u4 < bad_p), 5+torch.floor(26*u3), (sbad-1).clamp_min(0.))
+    isbad = bad > 0
+    last = torch.where(isbad, last0, ym)
+    y = torch.where(isbad, last, ym)
+
+    K_abs = P['K'][:, :, :NMV].abs()
+    can = ((mvm > 0) & PR.in_service(t['ulo'], t['uhi']))[:, None, :] & (K_abs > 0) & (K_abs >= .05*K_abs.amax(-1, keepdim=True))
+    d_ref = (P['dead'][:, :, :NMV]/phi[:, None, None]).round().clamp(0, DMAX)
+    d_ref = torch.where(can, d_ref, torch.full_like(d_ref, DMAX)).amin(-1)
+    d_ref = torch.where(prc > 0, d_ref, torch.zeros_like(d_ref)).long()[:, None, :]
+    ref = torch.gather(thist0, 1, d_ref)[:, 0]
+    alo = torch.gather(alo0, 1, d_ref)[:, 0]
+    ahi = torch.gather(ahi0, 1, d_ref)[:, 0]
+    zlo = torch.gather(lo0, 1, d_ref)[:, 0]
+    zhi = torch.gather(hi0, 1, d_ref)[:, 0]
+    rref = torch.gather(rhist0, 1, d_ref)[:, 0]
+
+    err = (yt-ref)/band*trk
+    rst = rst_f > 0
+    erc = torch.where(rst, (yt-rref)/band, err)
+    viol = ((zlo-yt).clamp_min(0)+(yt-zhi).clamp_min(0))/band*zon
+    mv = (u-u0)/sl*mvm
+    track, zone, move = (t['cvw']*erc**2).sum(-1), 10*(viol**2).sum(-1), .001*(mv**2).sum(-1)
+
+    k_next = k_t+1
+    seg_n = (seg_k <= k_next).sum(1)-1
+    Tn_f = T_flat[ar, seg_n]
+    tn = {q: Tn_f[:, a0:b0].reshape(n, *sh) for q, a0, b0, sh in tlay_items}
+    target = tn['tgt']
+    held_n = (k_next < hold_k[ar, seg_n])[:, None]
+    nlo = torch.where(held_n, tn['blo'], tn['alo'])
+    nhi = torch.where(held_n, tn['bhi'], tn['ahi'])
+
+    thist = torch.cat((target[:, None], thist0[:, :-1]), 1)
+    rhist = torch.cat((tn['rtgt'][:, None], rhist0[:, :-1]), 1)
+    alo_n = torch.cat((nlo[:, None], alo0[:, :-1]), 1)
+    ahi_n = torch.cat((nhi[:, None], ahi0[:, :-1]), 1)
+    lo_n = torch.cat((tn['lo'][:, None], lo0[:, :-1]), 1)
+    hi_n = torch.cat((tn['hi'][:, None], hi0[:, :-1]), 1)
+
+    soft = (t['cvw']*huber(erc, HUBER+torch.where(rst, torch.zeros_like(alo), torch.maximum(-alo, ahi)))).sum(-1)+10*huber(viol).sum(-1)+move
+    outside = (((err < alo-1) | (err > ahi+1)) & (trk > 0)) | ((viol > ahi) & (zon > 0))
+    trip = torch.zeros(n, dtype=torch.bool, device=u.device)
+
+    new_vals = (u, u0, ua, xv, buf, sr, si, l1, l2, v, ou, d, odr, od,
+                ys, cn, held, pend, age, bad, last, y, y0, yt, fl,
+                target, tgt0, thist, rhist, alo_n, ahi_n, lo_n, hi_n, fail, mx)
+    out_vals = (track+zone+move, soft, track, zone, move, err, erc, viol, ref, fail,
+                alo, ahi, zlo, zhi, outside, trip)
+    return new_vals, out_vals
+
+
+def enable_sim_compile(enabled=True, dynamic=False, cpu=False, backend='inductor'):
+    """Enable/disable `torch.compile` fusion for pure-tensor (`--mech 0`, `Fr=None`, no fault) `observe()` and `step()`.
+    Safe on CPU/MPS: compiled path activates only on CUDA unless `cpu=True` is explicitly requested (e.g. unit tests)."""
+    global _SIM_COMPILE, _SIM_COMPILE_CPU, _SIM_COMPILE_KW, _OBS_COMPILED, _STEP_COMPILED
+    _SIM_COMPILE = bool(enabled)
+    _SIM_COMPILE_CPU = bool(cpu)
+    _SIM_COMPILE_KW = dict(dynamic=dynamic, backend=backend)
+    if _SIM_COMPILE:
+        torch._dynamo.config.cache_size_limit = max(getattr(torch._dynamo.config, 'cache_size_limit', 8), 64)
+        _OBS_COMPILED = torch.compile(_observe_pure, dynamic=dynamic, backend=backend)
+        _STEP_COMPILED = torch.compile(_step_pure, dynamic=dynamic, backend=backend)
+    else:
+        _OBS_COMPILED = None
+        _STEP_COMPILED = None
+    return _SIM_COMPILE
+
+
+def is_sim_compiled():
+    """Return True when pure-tensor simulator compilation (`enable_sim_compile`) is active."""
+    return _SIM_COMPILE
+
+
+def step_ctx(prog, k):
+    """Compute segment parameters and task arrays `(P, t)` once at decision `k` for reuse across observe/priv_features/step."""
+    k_cl = min(int(k), HORIZON-1)
+    seg = prog.seg_at(k_cl)
+    return prog.params(seg, k_cl), prog.task(seg)
+
+
+def observe(prog, st, k, *, t=None):
     """The packet at decision k (aio.interface layout: 234 numbers at the default size, prog.size at any)."""
+    if _SIM_COMPILE and _OBS_COMPILED is not None and t is None and (prog.P.device.type == 'cuda' or _SIM_COMPILE_CPU):
+        c = prog.c
+        tlay_obs = tuple(prog.tlay[q] for q in _OBS_T_KEYS)
+        c_obs = tuple(c[q] for q in _OBS_C_KEYS)
+        st_obs = tuple(st[q] for q in _OBS_ST_KEYS)
+        return _OBS_COMPILED(prog._k_tensor(k), prog.seg_k, prog.ar, prog.T, tlay_obs, bool(getattr(prog, 'blind', False)), c_obs, st_obs)
     c = prog.c
-    t = prog.task(prog.seg_at(k))
+    if t is None:
+        t = prog.task(prog.seg_at(k))
     s, tgt, y = t['scale'], st['target'], st['y']
     bad = st['bad'] > 0
     zero, one = torch.zeros_like(y), torch.ones_like(y)
@@ -611,17 +884,35 @@ def _reference(st, P, phi, c, t):
     return (torch.gather(st[q], 1, d)[:, 0] for q in ('thist', 'alo', 'ahi', 'lo', 'hi', 'rhist'))
 
 
-def step(prog, st, a, k, rnd=None, through=True, stops=False):
+def step(prog, st, a, k, rnd=None, through=True, stops=False, *, P=None, t=None):
     """One decision: moves a (n, NMV) in [-1, 1] of the slew limit (plant frame). Returns the next state and
     `out`: cost (n,), its parts, `soft` (the same cost with Huber tails, for gradients), the per-row errors
     in bands, and whether a row is outside its band or limit.
     stops: straight-through gradients at a level's physical stops too (aio.train --stops; the forward values are the same).
     through: straight-through gradients at the MV limits and through valve friction (the forward values are
     exact; without it a move into a limit or inside the friction band has zero gradient)."""
+    if (_SIM_COMPILE and _STEP_COMPILED is not None and not prog.mg and prog.Fr is None
+            and getattr(prog, 'fault', None) is None and P is None and t is None
+            and (prog.P.device.type == 'cuda' or _SIM_COMPILE_CPU)):
+        z, uu = prog.noise() if rnd is None else rnd
+        c = prog.c
+        c_step = tuple(c.get('mvf', c['mvm']) if q == 'mvf' else c[q] for q in _STEP_C_KEYS)
+        st_step = tuple(st[q] for q in _STEP_ST_KEYS)
+        lay_items = tuple((q, a0, b0, sh) for q, (a0, b0, sh) in prog.lay.items())
+        tlay_items = tuple((q, a0, b0, sh) for q, (a0, b0, sh) in prog.tlay.items())
+        new_vals, out_vals = _STEP_COMPILED(
+            prog._k_tensor(k), a, z, uu, bool(through), bool(stops), prog.dims,
+            lay_items, tlay_items, prog.P, prog.T, prog.seg_k, prog.ramp, prog.hold_k, prog.ar, c_step, st_step,
+        )
+        return dict(zip(_NEW_ST_KEYS, new_vals)), dict(zip(_OUT_KEYS, out_vals))
     NCV, NMV, ND, NQ, NDQ, NU = prog.dims
     c, n = prog.c, prog.n
-    seg = prog.seg_at(k)
-    P, t = prog.params(seg, k), prog.task(seg)
+    if P is None or t is None:
+        seg = prog.seg_at(k)
+        if P is None:
+            P = prog.params(seg, k)
+        if t is None:
+            t = prog.task(seg)
     z, uu = prog.noise() if rnd is None else rnd
     zq, zw, zc, zo = z[:, :NDQ], z[:, NDQ:NDQ+NCV], z[:, NDQ+NCV:NDQ+2*NCV], z[:, NDQ+2*NCV:]
     u1, u2, u3, u4 = uu[:, :NCV], uu[:, NCV:2*NCV], uu[:, 2*NCV:3*NCV], uu[:, 3*NCV:]

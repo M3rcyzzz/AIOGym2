@@ -26,8 +26,10 @@ of the ones before it (Room; not in the state, built again from the state's pack
 a graph attends to the state's decisions without a graph through them. A single decision with a graph (the plant's
 gradient) is the only one computed too: its graph goes through the decisions since the state last came detached, their
 keys and values held with their graphs (Room.late; the graphs are kept, not rebuilt: no --lean)."""
+import contextlib
 import math
 import os
+import weakref
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -82,10 +84,16 @@ def said(sp):
 _ROTARY_FREQ = {}
 _ROTARY_TBL = {}
 _EYE_CACHE = {}
+_LAG_TAUS = {}
+_ARANGE_CACHE = {}
+
+
+def _is_compiling():
+    return hasattr(torch, 'compiler') and torch.compiler.is_compiling()
 
 
 def _eye_cached(n, dev, dtype):
-    if hasattr(torch, 'compiler') and torch.compiler.is_compiling():
+    if _is_compiling():
         return torch.eye(n, device=dev, dtype=dtype)
     key = (n, dev, dtype)
     e = _EYE_CACHE.get(key)
@@ -95,6 +103,49 @@ def _eye_cached(n, dev, dtype):
         e = torch.eye(n, device=dev, dtype=dtype)
         _EYE_CACHE[key] = e
     return e
+
+
+def _lag_taus_cached(lag_list, dev):
+    if _is_compiling():
+        return torch.tensor(lag_list, device=dev, dtype=torch.long)
+    key = (lag_list, dev)
+    t = _LAG_TAUS.get(key)
+    if t is None:
+        if len(_LAG_TAUS) >= 32:
+            _LAG_TAUS.clear()
+        t = torch.tensor(lag_list, device=dev, dtype=torch.long)
+        _LAG_TAUS[key] = t
+    return t
+
+
+def _arange_cached(n, dev):
+    if _is_compiling():
+        return torch.arange(n, device=dev, dtype=torch.long)
+    tbl = _ARANGE_CACHE.get(dev)
+    if tbl is None or tbl.shape[0] < n:
+        cap = max(256, 1 << (max(n, 1) - 1).bit_length())
+        if len(_ARANGE_CACHE) >= 16:
+            _ARANGE_CACHE.clear()
+        tbl = torch.arange(cap, device=dev, dtype=torch.long)
+        _ARANGE_CACHE[dev] = tbl
+    return tbl[:n]
+
+
+def _pos_tensor(ps, dev):
+    """(len(ps),) long tensor on `dev`, avoiding CPU->GPU H2D copy whenever `ps` is consecutive integers."""
+    m = len(ps)
+    if m == 0:
+        return _arange_cached(0, dev)
+    if ps[-1] - ps[0] == m - 1:
+        return _arange_cached(m, dev) + ps[0]
+    return torch.tensor(ps, device=dev, dtype=torch.long)
+
+
+def _amp_ctx(amp, x):
+    """Enter CUDA bfloat16 autocast only if `amp` is enabled and we are not already inside a hoisted autocast."""
+    if amp and x.is_cuda and not torch.is_autocast_enabled('cuda'):
+        return torch.autocast('cuda', dtype=torch.bfloat16)
+    return contextlib.nullcontext()
 
 
 def rotary_cs(h, start, T, dev, dtype):
@@ -226,8 +277,9 @@ class Layer(nn.Module):
         S, h, dh = K.shape[2], K.shape[1], K.shape[3]
         L = len(self.lag_list)
         if idx is None:
-            idx = torch.tensor([(at-tau) % S for tau in self.lag_list], device=K.device, dtype=torch.long)
-            ok = (there.index_select(1, idx) & (where.index_select(0, idx) == torch.tensor([pos-tau for tau in self.lag_list], device=K.device, dtype=where.dtype))[None])[:, None]
+            taus = _lag_taus_cached(self.lag_list, K.device)
+            idx = (at-taus) % S
+            ok = (there.index_select(1, idx) & (where.index_select(0, idx) == (pos-taus))[None])[:, None]
         K_all = K.index_select(2, idx).reshape(b, N, h, L, dh).permute(0, 2, 1, 3, 4).reshape(b, h, N*L, dh)
         V_all = V.index_select(2, idx).reshape(b, N, h, L, dh).permute(0, 2, 1, 3, 4).reshape(b, h, N*L, dh)
         return K_all, V_all, ok
@@ -311,72 +363,102 @@ class Layer(nn.Module):
         cos_p, sin_p = rotary_cs(dh, pos, 1, x.device, x.dtype) if cs is None else cs
         if self.lags and lag_idx is None:
             S = K.shape[2]
-            lag_idx = torch.tensor([(at-tau) % S for tau in self.lag_list], device=K.device, dtype=torch.long)
-            lag_ok = (there.index_select(1, lag_idx) & (where.index_select(0, lag_idx) == torch.tensor([pos-tau for tau in self.lag_list], device=K.device, dtype=where.dtype))[None])[:, None]
+            taus = _lag_taus_cached(self.lag_list, K.device)
+            lag_idx = (at-taus) % S
+            lag_ok = (there.index_select(1, lag_idx) & (where.index_select(0, lag_idx) == (pos-taus))[None])[:, None]
         q, k0, v0 = self._step_infer_core(x, on, bias, K, V, there, cos_p, sin_p, lag_idx, lag_ok, edge0, ncv, rel_feat)
         K[:, :, at], V[:, :, at] = k0, v0
         return self._step_infer_post(x, on, bias, q, K, V, there, cos_p, sin_p, lag_idx, lag_ok, edge0, ncv, rel_feat)
 
-    def _step_core_late(self, x, on, bias, K, V, see, Kl, Vl, live_all, K_lag, V_lag, ok_lag, cos_p, sin_p, edge0, ncv, rel_feat):
+    def _step_core_late(self, x, on, bias, K, V, see, Kl, Vl, live_all, K_lag, V_lag, ok_lag, cos_p, sin_p, edge0, ncv, rel_feat, cut_late=None, cut_lag=None):
         """Fixed-arity differentiable layer core (with late graph tokens; directly torch.compile-able with dynamic=True)."""
         b, _, N, d = x.shape
         h, S, dh = self.h, K.shape[2], d//self.h
         q, k, v = self.qkv_t(self.n1(x)).reshape(b*N, 3, h, 1, dh).unbind(1)                                    # (b*N,h,1,d/h) each
         q, k = self.norm_qk(q, k, 't')
-        q, k, v = apply_rotary(q, cos_p, sin_p)[:, :, 0], apply_rotary(k, cos_p, sin_p)[:, :, 0], v[:, :, 0]
+        q, k, v = apply_rotary(q, cos_p, sin_p)[:, :, 0], apply_rotary(k, cos_p, sin_p)[:, :, 0], v[:, :, 0].contiguous()
         ring = torch.matmul(q[:, :, None].to(K.dtype), K.transpose(-1, -2))[:, :, 0].to(q.dtype)                # (b*N,h,S)
         ring = ring.masked_fill(~see[:, None, None].expand(b, N, 1, S).reshape(b*N, 1, S), float('-inf'))
         if Kl is not None:
+            if cut_late is not None:
+                m_cut = cut_late[:, None, None, :, None].expand(b, N, 1, Kl.shape[2], 1).reshape(b*N, 1, Kl.shape[2], 1)
+                Kl = torch.where(m_cut, Kl.detach(), Kl)
+                Vl = torch.where(m_cut, Vl.detach(), Vl)
             Kl_all = torch.cat((Kl, k[:, :, None]), 2)                                                          # (b*N,h,n_late+1,dh)
             Vl_all = torch.cat((Vl, v[:, :, None]), 2)
             since = torch.matmul(q[:, :, None], Kl_all.transpose(-1, -2))[:, :, 0]                              # (b*N,h,n_late+1)
             since = since.masked_fill(~live_all[:, None, None, :].expand(b, N, 1, Kl_all.shape[2]).reshape(b*N, 1, Kl_all.shape[2]), float('-inf'))
-            a = torch.softmax(torch.cat((ring, since), -1)/math.sqrt(dh), -1)
-            y = torch.matmul(a[:, :, None, :S].to(V.dtype), V)[:, :, 0].to(q.dtype)+torch.matmul(a[:, :, None, S:], Vl_all)[:, :, 0]
+            a = torch.softmax(torch.cat((ring, since), -1).float()/math.sqrt(dh), -1)
+            y = torch.matmul(a[:, :, None, :S].to(V.dtype), V)[:, :, 0].to(q.dtype)+torch.matmul(a[:, :, None, S:].to(Vl_all.dtype), Vl_all)[:, :, 0].to(q.dtype)
         else:
-            a = torch.softmax(torch.cat((ring, (q*k).sum(-1, keepdim=True)), -1)/math.sqrt(dh), -1)
-            y = torch.matmul(a[:, :, None, :S].to(V.dtype), V)[:, :, 0].to(q.dtype)+a[..., -1:]*v
+            a = torch.softmax(torch.cat((ring, (q*k).sum(-1, keepdim=True)), -1).float()/math.sqrt(dh), -1)
+            y = torch.matmul(a[:, :, None, :S].to(V.dtype), V)[:, :, 0].to(q.dtype)+a[..., -1:].to(v.dtype)*v
         x = x+self.out_t(y.reshape(b, N, d)[:, None])*on[..., None]
         if self.lags and K_lag is not None:
+            if cut_lag is not None:
+                L = len(self.lag_list)
+                m_lag = cut_lag[:, None, None, :, None].expand(b, 1, N, L, 1).reshape(b, 1, N*L, 1)
+                K_lag = torch.where(m_lag, K_lag.detach(), K_lag)
+                V_lag = torch.where(m_lag, V_lag.detach(), V_lag)
             x = self.lagged_part(x, on, bias, K_lag, V_lag, ok_lag, 0, rel_feat, ncv, (cos_p, sin_p))
         return self.across(x, on, bias, edge0, ncv, rel_feat), k, v
 
-    def _step_graph_body(self, x, on, bias, K, V, see, cos_p, sin_p, n_late, n_lags, ncv, edge0, rel_feat, *tensors):
+    def _step_graph_body(self, x, on, bias, K, V, see, cos_p, sin_p, n_late, n_lags, ncv, edge0, rel_feat,
+                         lag_plan, ring_idx, ring_oks, cut_late, cut_lag, *tensors):
         """Pure functional body of `step_graph` (compatible with activation checkpointing, O(H) saved memory)."""
         b, _, N, d = x.shape
         h, dh = self.h, d//self.h
         if n_late:
-            Kl = torch.stack(tensors[:n_late], 2)
-            Vl = torch.stack(tensors[n_late:2*n_late], 2)
-            live_all = torch.stack(tensors[2*n_late:3*n_late]+(torch.ones_like(see[:, 0]),), 1)
+            Kl_l = tensors[:n_late]
+            Vl_l = tensors[n_late:2*n_late]
+            lv_l = tensors[2*n_late:3*n_late]
+            Kl = torch.stack(Kl_l, 2)
+            Vl = torch.stack(Vl_l, 2)
+            live_all = torch.stack(lv_l+(torch.ones_like(see[:, 0]),), 1)
         else:
+            Kl_l = Vl_l = lv_l = ()
             Kl = Vl = live_all = None
-        if n_lags:
+        if lag_plan is not None:
+            L = len(lag_plan)
+            if ring_idx is not None:
+                rK = K.index_select(2, ring_idx).unbind(2)
+                rV = V.index_select(2, ring_idx).unbind(2)
+                rOk = ring_oks.unbind(1)
+            K_lag = torch.stack([Kl_l[idx] if is_late else rK[idx] for is_late, idx in lag_plan], 2).to(x.dtype).reshape(b, N, h, L, dh).permute(0, 2, 1, 3, 4).reshape(b, h, N*L, dh)
+            V_lag = torch.stack([Vl_l[idx] if is_late else rV[idx] for is_late, idx in lag_plan], 2).to(x.dtype).reshape(b, N, h, L, dh).permute(0, 2, 1, 3, 4).reshape(b, h, N*L, dh)
+            ok_lag = torch.stack([lv_l[idx] if is_late else rOk[idx] for is_late, idx in lag_plan], -1)[:, None]
+        elif n_lags:
             off = 3*n_late
             K_lag = torch.stack(tensors[off:off+n_lags], 2).to(x.dtype).reshape(b, N, h, n_lags, dh).permute(0, 2, 1, 3, 4).reshape(b, h, N*n_lags, dh)
             V_lag = torch.stack(tensors[off+n_lags:off+2*n_lags], 2).to(x.dtype).reshape(b, N, h, n_lags, dh).permute(0, 2, 1, 3, 4).reshape(b, h, N*n_lags, dh)
             ok_lag = torch.stack(tensors[off+2*n_lags:off+3*n_lags], -1)[:, None]
         else:
             K_lag = V_lag = ok_lag = None
-        return self._step_core_late(x, on, bias, K, V, see, Kl, Vl, live_all, K_lag, V_lag, ok_lag, cos_p, sin_p, edge0, ncv, rel_feat)
+        return self._step_core_late(x, on, bias, K, V, see, Kl, Vl, live_all, K_lag, V_lag, ok_lag, cos_p, sin_p, edge0, ncv, rel_feat, cut_late, cut_lag)
 
-    def step_graph(self, x, on, bias, K, V, see, late, lives, pos, lagkv=None, grad_ckpt=False, edge0=None, ncv=None, rel_feat=None, cs=None):
+    def step_graph(self, x, on, bias, K, V, see, late, lives, pos, lagkv=None, grad_ckpt=False, edge0=None, ncv=None, rel_feat=None, cs=None,
+                   lag_plan=None, ring_idx=None, ring_oks=None, cut_late=None, cut_lag=None):
         """step with a graph: nothing is written into K and V (the graph holds them as they are), the decisions since the
         graph began are in `late`, a list of their keys and values (b*N,h,d/h) with their own graphs, lives (b,) bool
         each: which plants they are decisions of; this one's are put last. see (b,S): the slots a plant attends to.
-        lagkv (g1/g2): per lag the key and value (b*N,h,d/h) of the decision that far back and which plants have it (b,).
+        lag_plan/ring_idx/ring_oks (g1/g2): lag indexing resolved inside checkpointed body (zero saved ring-lag copies);
+        lagkv: legacy fallback list of (k, v, ok) per lag.
+        cut_late/cut_lag: optional causal gradient cutoff masks from Room.cut_pos (applied inside checkpointed core).
         grad_ckpt: checkpoint the layer body (passes existing late tensor refs without O(H^2) copies)."""
         dh = x.shape[-1]//self.h
         cos_p, sin_p = rotary_cs(dh, pos, 1, x.device, x.dtype) if cs is None else cs
         n_late = len(late)
-        n_lags = len(lagkv) if self.lags else 0
+        use_plan = lag_plan if self.lags else None
+        n_lags = 0 if use_plan is not None else (len(lagkv) if self.lags and lagkv is not None else 0)
         tensors = tuple(kj for kj, _ in late)+tuple(vj for _, vj in late)+tuple(lives)
         if n_lags:
             tensors = tensors+tuple(kj for kj, _, _ in lagkv)+tuple(vj for _, vj, _ in lagkv)+tuple(oj for _, _, oj in lagkv)
         if grad_ckpt and torch.is_grad_enabled():
-            x, k, v = checkpoint(self._step_graph_body, x, on, bias, K, V, see, cos_p, sin_p, n_late, n_lags, ncv, edge0, rel_feat, *tensors, use_reentrant=False)
+            x, k, v = checkpoint(self._step_graph_body, x, on, bias, K, V, see, cos_p, sin_p, n_late, n_lags, ncv, edge0, rel_feat,
+                                 use_plan, ring_idx, ring_oks, cut_late, cut_lag, *tensors, use_reentrant=False)
         else:
-            x, k, v = self._step_graph_body(x, on, bias, K, V, see, cos_p, sin_p, n_late, n_lags, ncv, edge0, rel_feat, *tensors)
+            x, k, v = self._step_graph_body(x, on, bias, K, V, see, cos_p, sin_p, n_late, n_lags, ncv, edge0, rel_feat,
+                                            use_plan, ring_idx, ring_oks, cut_late, cut_lag, *tensors)
         late.append((k, v))
         return x
 
@@ -485,14 +567,27 @@ class Tokens(nn.Module):
             x, on, bias, link, ncv = self.embed(obs, previous)
             for layer in self.layers:
                 x = layer(x, on, bias, seen)
-        self.x_norm_last = (x.detach().float().norm(dim=-1)*on).sum()/on.sum().clamp_min(1.)
+        self.x_norm_last = (x.detach().float().norm(dim=-1)*on.float()).sum()/on.float().sum().clamp_min(1.)
         x = self.remember(self.norm(x), on, mem0)
         return x[:, :, :ncv], x[:, :, ncv:], link
+
+    def _remember_step(self, x, on, mem0):
+        """Single-step mK recurrence core (compilable via torch.compile, zero Python loop)."""
+        b, _, N, _ = x.shape
+        a = torch.sigmoid(self.mem_a.float())
+        u = self.mem_in(self.mem_n(x)).float()*(1-a)
+        m = x.new_zeros(b, N, self.nmem, dtype=torch.float32) if mem0 is None else mem0.float()
+        m = torch.where(on[:, 0, :, None] > 0, a*m+u[:, 0], m)
+        return x+self.mem_out(m[:, None].to(x.dtype))*on[..., None], m
 
     def remember(self, x, on, mem0):
         """mK: the tokens after the layers with the memory read in, the memory carried on decision by decision."""
         if not self.nmem:
             return x
+        if x.shape[1] == 1:
+            out, m = self._remember_step(x, on, mem0)
+            self.mem_last = m
+            return out
         b, T, N, _ = x.shape
         a = torch.sigmoid(self.mem_a.float())
         u = self.mem_in(self.mem_n(x)).float()*(1-a)
@@ -616,7 +711,9 @@ class Tokens(nn.Module):
         obs: (b, 1, SIZE), rel0: (b, rel_state_size(ncv, nmv)) or None -> rel_feat (b, ncv, nmv, REL_F)."""
         if not self.rel:
             return None
-        with torch.autocast('cuda', enabled=False) if obs.is_cuda else torch.enable_grad() if torch.is_grad_enabled() else torch.no_grad():
+        dev_type = obs.device.type
+        ac = torch.autocast(dev_type, enabled=False) if torch.is_autocast_enabled(dev_type) else contextlib.nullcontext()
+        with ac:
             cv, mv, _ = unpack(obs[:, 0].float())
             b, ncv, nmv = cv.shape[0], cv.shape[1], mv.shape[1]
             st_len = rel_state_size(ncv, nmv)
@@ -628,64 +725,83 @@ class Tokens(nn.Module):
         self.rel_feat_last = rf
         return rf
 
-    def rel_cv_message(self, x, on, ncv, rel_feat, rel_pipe=None):
-        """r1/r2: Layer-0 in-flight pipe injection (r2) + edge-conditioned CV<-MV predictor message (zero-init output; feeds all layers)."""
-        if not self.rel or rel_feat is None:
-            return x
+    def _rel_cv_core(self, x, on, ncv, rel_feat, rel_pipe):
         on_c, on_m = on[:, :, :ncv], on[:, :, ncv:]
         x_m = x[:, :, ncv:]
         if self.rel >= 2 and rel_pipe is not None:
             x_m = x_m+self.rel_pipe_in(rel_pipe[:, None].to(x.dtype))*on_m[..., None]
         rf = rel_feat[:, None].to(x.dtype)
         m_msg = self.rel_m_in(self.rel_mn(x_m))*on_m[..., None]
-        agg_cv = (self.rel_e_cv(rf)*m_msg[:, :, None, :, :]).sum(3)/on_m.sum(-1, keepdim=True).clamp_min(1.).sqrt()[..., None]
+        agg_cv = (self.rel_e_cv(rf)*m_msg[:, :, None, :, :]).sum(3)/on_m.float().sum(-1, keepdim=True).clamp_min(1.).sqrt().to(x.dtype)[..., None]
         dx_c = self.rel_cv_out(agg_cv)*on_c[..., None]
         return torch.cat((x[:, :, :ncv]+dx_c, x_m), 2)
+
+    def rel_cv_message(self, x, on, ncv, rel_feat, rel_pipe=None):
+        """r1/r2: Layer-0 in-flight pipe injection (r2) + edge-conditioned CV<-MV predictor message (zero-init output; feeds all layers)."""
+        if not self.rel or rel_feat is None:
+            return x
+        return self._rel_cv_core(x, on, ncv, rel_feat, rel_pipe)
+
+    def _rel_mv_core(self, r, m, on, ncv, rel_feat):
+        on_c, on_m = on[:, :, :ncv], on[:, :, ncv:]
+        rf = rel_feat[:, None].to(r.dtype)
+        c_msg = self.rel_c_in(self.rel_rn(r))*on_c[..., None]
+        agg_mv = (self.rel_e_mv(rf)*c_msg[:, :, :, None, :]).sum(2)/on_c.float().sum(-1, keepdim=True).clamp_min(1.).sqrt().to(r.dtype)[..., None]
+        return m+self.rel_mv_out(agg_mv)*on_m[..., None]
 
     def rel_mv_message(self, r, m, on, ncv, rel_feat):
         """r1: Post-layer 1-hop edge-conditioned MV<-CV decoupler message directly into `act` (zero-init output)."""
         if not self.rel or rel_feat is None:
             return m
-        on_c, on_m = on[:, :, :ncv], on[:, :, ncv:]
-        rf = rel_feat[:, None].to(r.dtype)
-        c_msg = self.rel_c_in(self.rel_rn(r))*on_c[..., None]
-        agg_mv = (self.rel_e_mv(rf)*c_msg[:, :, :, None, :]).sum(2)/on_c.sum(-1, keepdim=True).clamp_min(1.).sqrt()[..., None]
-        return m+self.rel_mv_out(agg_mv)*on_m[..., None]
+        return self._rel_mv_core(r, m, on, ncv, rel_feat)
+
+    def _embed_core(self, cv, mv, link, previous):
+        ncv, nmv = cv.shape[-2], mv.shape[-2]
+        cm, mm = cv[..., -1:], mv[..., -1:]
+        x = torch.cat((self.row(symlog(cv*cm)), self.mv(torch.cat((symlog(mv*mm), previous[..., None]*mm), -1))), 2)
+        on = torch.cat((cm[..., 0], mm[..., 0]), 2).to(x.dtype)
+        x = x*on[..., None]
+        link_d = link.to(x.dtype)
+        z_cc = x.new_zeros(*x.shape[:2], ncv, ncv)
+        z_mm = x.new_zeros(*x.shape[:2], nmv, nmv)
+        bias = torch.cat((torch.cat((z_cc, link_d), -1), torch.cat((link_d.transpose(-1, -2), z_mm), -1)), -2)
+        return x, on, bias
 
     def embed(self, obs, previous):
         """-> the tokens before the layers (b,T,N,d), which are in service (b,T,N), the pairing among them (b,T,N,N)
         and as published (b,T,NCV,NMV), the number of rows."""
         cv, mv, link = unpack(obs)
         ncv = cv.shape[-2]
-        cm, mm = cv[..., -1:], mv[..., -1:]
-        x = torch.cat((self.row(symlog(cv*cm)), self.mv(torch.cat((symlog(mv*mm), previous[..., None]*mm), -1))), 2)
-        on = torch.cat((cm[..., 0], mm[..., 0]), 2)
-        x = x*on[..., None]
-        N = x.shape[2]
-        bias = x.new_zeros(*x.shape[:2], N, N)
-        bias[..., :ncv, ncv:] = link
-        bias[..., ncv:, :ncv] = link.transpose(-1, -2)
+        x, on, bias = self._embed_core(cv, mv, link, previous)
         return x, on, bias, link, ncv
 
-    def forward(self, obs, previous, seen=None, ahead=0, mem0=None):
-        """-> the responses read per pair (b,T,NCV,NMV,knots), the moves' means per MV (b,T,NMV), the logit of `when` per MV (b,T,NMV)
-        (ahead: of the decisions after those)."""
-        return self.heads(*self.tokens(obs, previous, seen, ahead, mem0))
+    def forward(self, obs, previous, seen=None, ahead=0, mem0=None, need_read=True):
+        """-> the responses read per pair (b,T,NCV,NMV,knots) or None if need_read=False, the moves' means per MV (b,T,NMV),
+        the logit of `when` per MV (b,T,NMV) (ahead: of the decisions after those)."""
+        return self.heads(*self.tokens(obs, previous, seen, ahead, mem0), need_read=need_read)
 
-    def enable_compile(self, dynamic=True):
-        """Compile fixed-arity per-layer step cores and Erlang/DeltaNet update via torch.compile (CUDA/Triton)."""
+    def enable_compile(self, dynamic=True, backend='inductor'):
+        """Compile fixed-arity per-layer step cores, Erlang/DeltaNet update, and outer hot step helpers via torch.compile (zero `_orig_mod.` keys in state_dict)."""
         if getattr(self, '_compiled', False):
             return self
         torch._dynamo.config.cache_size_limit = max(getattr(torch._dynamo.config, 'cache_size_limit', 8), 64)
-        self._update_rel_core = torch.compile(self._update_rel_core, dynamic=dynamic)
+        self._embed_core = torch.compile(self._embed_core, dynamic=dynamic, backend=backend)
+        if self.rel:
+            self._update_rel_core = torch.compile(self._update_rel_core, dynamic=dynamic, backend=backend)
+            self._rel_cv_core = torch.compile(self._rel_cv_core, dynamic=dynamic, backend=backend)
+            self._rel_mv_core = torch.compile(self._rel_mv_core, dynamic=dynamic, backend=backend)
+        if self.nmem:
+            self._remember_step = torch.compile(self._remember_step, dynamic=dynamic, backend=backend)
+        self._heads_act = torch.compile(self._heads_act, dynamic=dynamic, backend=backend)
+        self._heads_read = torch.compile(self._heads_read, dynamic=dynamic, backend=backend)
         for layer in self.layers:
-            layer._step_core_late = torch.compile(layer._step_core_late, dynamic=dynamic)
-            layer._step_infer_core = torch.compile(layer._step_infer_core, dynamic=dynamic)
-            layer._step_infer_post = torch.compile(layer._step_infer_post, dynamic=dynamic)
+            layer._step_core_late = torch.compile(layer._step_core_late, dynamic=dynamic, backend=backend)
+            layer._step_infer_core = torch.compile(layer._step_infer_core, dynamic=dynamic, backend=backend)
+            layer._step_infer_post = torch.compile(layer._step_infer_post, dynamic=dynamic, backend=backend)
         self._compiled = True
         return self
 
-    def step(self, obs, previous, room, mem0=None, edge0=None, rel0=None):
+    def step(self, obs, previous, room, mem0=None, edge0=None, rel0=None, need_read=True):
         """forward for one new decision (b,1,...) on the keys and values kept in `room` (Room), where its own are put."""
         rel_feat = self.update_rel(obs, rel0) if self.rel else None
         x, on, bias, link, ncv = self.embed(obs, previous)
@@ -700,21 +816,21 @@ class Tokens(nn.Module):
         lag_idx = lag_ok = None
         if self.layers[0].lags:
             S = room.there.shape[1]
-            ll = self.layers[0].lag_list
-            lag_idx = torch.tensor([(at-tau) % S for tau in ll], device=x.device, dtype=torch.long)
-            lag_ok = (room.there.index_select(1, lag_idx) & (room.where.index_select(0, lag_idx) == torch.tensor([room.pos-tau for tau in ll], device=x.device, dtype=room.where.dtype))[None])[:, None]
+            taus = _lag_taus_cached(self.layers[0].lag_list, x.device)
+            lag_idx = (at-taus) % S
+            lag_ok = (room.there.index_select(1, lag_idx) & (room.where.index_select(0, lag_idx) == (room.pos-taus))[None])[:, None]
         for i, layer in enumerate(self.layers):
             x = layer.step(x, on, bias, room.K[i], room.V[i], room.there, at, room.pos, room.where, edge0, ncv, rel_feat, cs, lag_idx, lag_ok)
-        self.x_norm_last = (x.detach().float().norm(dim=-1)*on).sum()/on.sum().clamp_min(1.)
+        self.x_norm_last = (x.detach().float().norm(dim=-1)*on.float()).sum()/on.float().sum().clamp_min(1.)
         x = self.remember(self.norm(x), on, mem0)
         r, m = x[:, :, :ncv], x[:, :, ncv:]
         if self.edge:
             self.update_edge(r, m, on, ncv, edge0)
         if self.rel:
             m = self.rel_mv_message(r, m, on, ncv, rel_feat)
-        return self.heads(r, m, link)
+        return self.heads(r, m, link, need_read=need_read)
 
-    def step_graph(self, obs, previous, room, mem0=None, edge0=None, rel0=None):
+    def step_graph(self, obs, previous, room, mem0=None, edge0=None, rel0=None, need_read=True):
         """step with a graph through the decisions since the graph began (Room.late): what the plant's gradient goes through."""
         rel_feat = self.update_rel(obs, rel0) if self.rel else None
         x, on, bias, link, ncv = self.embed(obs, previous)
@@ -731,54 +847,73 @@ class Tokens(nn.Module):
         last = (room.at-1) % S                                    # the ring's newest slot (nothing is written into it while a graph is made)
         dh = self.d//self.layers[0].h
         cs = rotary_cs(dh, room.pos, 1, x.device, x.dtype)
-        # Hoist lag slot indexing ONCE outside the 12-layer loop (1 vectorized index_select per layer instead of 8!)
+        # Hoist lag slot indexing ONCE outside the layer loop on GPU (zero H2D copies, ring lookup deferred into checkpointed body)
         lag_plan = None
         ring_idx = ring_oks = None
+        has_late_lag = False
         if self.layers[0].lags:
             ll = self.layers[0].lag_list
-            lag_plan, ring_slots, ring_ps = [], [], []
-            for tau in ll:
+            taus_gpu = _lag_taus_cached(ll, x.device)
+            plan, ring_pos_idx = [], []
+            for j_l, tau in enumerate(ll):
                 p = room.pos-tau
                 if lp and p >= lp[0]:
-                    lag_plan.append((True, p-lp[0]))
+                    plan.append((True, p-lp[0]))
+                    has_late_lag = True
                 else:
-                    lag_plan.append((False, len(ring_slots)))
-                    ring_slots.append((last-(room.where[last]-p)) % S)
-                    ring_ps.append(p)
-            if ring_slots:
-                ring_idx = torch.stack(ring_slots)
-                rp_t = torch.tensor(ring_ps, device=x.device, dtype=room.where.dtype)
-                ring_oks = (room.there.index_select(1, ring_idx) & (room.where.index_select(0, ring_idx) == rp_t)[None]).unbind(1)
+                    plan.append((False, len(ring_pos_idx)))
+                    ring_pos_idx.append(j_l)
+            lag_plan = tuple(plan)
+            if ring_pos_idx:
+                if ring_pos_idx[0] + len(ring_pos_idx) == len(ll):
+                    taus_ring = taus_gpu[ring_pos_idx[0]:]
+                else:
+                    taus_ring = taus_gpu[ring_pos_idx]
+                rp_t = room.pos-taus_ring
+                ring_idx = (last-(room.where[last]-rp_t)) % S
+                ring_oks = room.there.index_select(1, ring_idx) & (room.where.index_select(0, ring_idx) == rp_t)[None]
+        cut_late = cut_lag = None
+        if room.cut_pos is not None:
+            if lp:
+                cut_late = _pos_tensor(lp, x.device)[None, :] < room.cut_pos[:, None]
+            if has_late_lag:
+                cut_lag = (room.pos-_lag_taus_cached(self.layers[0].lag_list, x.device))[None, :] < room.cut_pos[:, None]
         for i, layer in enumerate(self.layers):
             late = [kv for kv, o in zip(room.late[i], ok) if o]
-            lagkv = None
-            if lag_plan is not None:
-                if ring_idx is not None:
-                    rK = room.K[i].index_select(2, ring_idx).unbind(2)
-                    rV = room.V[i].index_select(2, ring_idx).unbind(2)
-                lagkv = [(late[idx][0], late[idx][1], lives[idx]) if is_late else (rK[idx], rV[idx], ring_oks[idx]) for is_late, idx in lag_plan]
-            x = layer.step_graph(x, on, bias, room.K[i], room.V[i], see, late, lives, room.pos, lagkv, self.grad_ckpt, edge0, ncv, rel_feat, cs)
+            x = layer.step_graph(x, on, bias, room.K[i], room.V[i], see, late, lives, room.pos, None, self.grad_ckpt,
+                                 edge0, ncv, rel_feat, cs, lag_plan, ring_idx, ring_oks, cut_late, cut_lag)
             room.late[i].append(late[-1])
-        self.x_norm_last = (x.detach().float().norm(dim=-1)*on).sum()/on.sum().clamp_min(1.)
+        self.x_norm_last = (x.detach().float().norm(dim=-1)*on.float()).sum()/on.float().sum().clamp_min(1.)
         x = self.remember(self.norm(x), on, mem0)
         r, m = x[:, :, :ncv], x[:, :, ncv:]
         if self.edge:
             self.update_edge(r, m, on, ncv, edge0)
         if self.rel:
             m = self.rel_mv_message(r, m, on, ncv, rel_feat)
-        return self.heads(r, m, link)
+        return self.heads(r, m, link, need_read=need_read)
 
-    def heads(self, r, m, link):
-        ncv, nmv = r.shape[2], m.shape[2]
-        pair = torch.cat((r[:, :, :, None].expand(-1, -1, -1, nmv, -1), m[:, :, None].expand(-1, -1, ncv, -1, -1), link[..., None].to(r.dtype)), -1)
+    def _heads_act(self, m):
         act = self.act(m)[..., 0]
         if self.mup:
             act = act/math.sqrt(self.d)
+        scale = None
         if self.rel >= 2:
             scale = torch.exp(self.act_gate(m)[..., 0].clamp(-5., .5))
-            self.act_scale_last = scale
             act = act*scale
-        return self.read(pair), act, self.when(m.detach())[..., 0]     # (`when` reads the tokens: nothing of it goes back into them)
+        return act, scale
+
+    def _heads_read(self, r, m, link):
+        ncv, nmv = r.shape[2], m.shape[2]
+        pair = torch.cat((r[:, :, :, None].expand(-1, -1, -1, nmv, -1), m[:, :, None].expand(-1, -1, ncv, -1, -1), link[..., None].to(r.dtype)), -1)
+        return self.read(pair)
+
+    def heads(self, r, m, link, need_read=True):
+        act, scale = self._heads_act(m)
+        if scale is not None:
+            self.act_scale_last = scale
+        when = self.when(m.detach())[..., 0]
+        lab = self._heads_read(r, m, link) if need_read else None
+        return lab, act, when
 
 
 # ---- the same network behind the interface of aio.net.AIO (aio.train, aio.net.Policy): `steps` with a state
@@ -809,6 +944,9 @@ class Room:
         self.at, self.pos, self.raw, self.n, self.used = 0, 0, None, None, 0
         self.read = False                                                                   # a graph was made on the ring since it was last written
         self.late, self.late_pos, self.late_live = [[] for _ in range(layers)], [], []       # the decisions made with a graph (Layer.step_graph): in the ring once it is done with (`settle`)
+        self.cut_pos = None                                                                 # (b,) int64 latest cut pos per env (None: no cut since last settle)
+        self.lane_tag = None                                                                # optional caller lane identity for zero-sync room matching
+        self._last_h_ref, self._last_h_ver = None, -1                                       # weakref & _version of last hidden tensor returned for this room
 
     def on(self, live=None):
         """The decision just written is the newest one; live (b,): the plants it is a decision of (None: all)."""
@@ -824,17 +962,45 @@ class Room:
         self.late_live.append(torch.ones_like(self.there[:, 0]))
         self.pos += 1
 
-    def settle(self):
-        """The decisions made with a graph, into the ring without it: when a state comes that carries no graph."""
+    def settle(self, inplace=False):
+        """The decisions made with a graph, into the ring without it: when a state comes that carries no graph.
+        inplace: True when called after `loss.backward()` so no active autograd graph references K/V (avoids full-ring clone)."""
         S = self.there.shape[1]
-        if self.read:                                             # a graph may still hold the ring as it was (a window's backward pass comes after the next one began): written in a copy
-            self.K, self.V, self.read = [K.clone() for K in self.K], [V.clone() for V in self.V], False
-        for j, (p, live) in enumerate(zip(self.late_pos, self.late_live)):
-            for K, V, late in zip(self.K, self.V, self.late):
-                K[:, :, self.at], V[:, :, self.at] = late[j][0].detach().to(K.dtype), late[j][1].detach().to(V.dtype)
-            self.there[:, self.at], self.where[self.at] = live, p
-            self.at = (self.at+1) % S
-        self.late, self.late_pos, self.late_live = [[] for _ in self.K], [], []
+        m = len(self.late_pos)
+        if not m:
+            self.read = False
+            self.cut_pos = None
+            return
+        if self.read and not inplace:                             # a graph may still hold the ring as it was (a window's backward pass comes after the next one began): written in a copy
+            self.K, self.V = [K.clone() for K in self.K], [V.clone() for V in self.V]
+        self.read = False
+        if m > S:
+            skip = m-S
+            self.at = (self.at+skip) % S
+            late_pos, late_live = self.late_pos[skip:], self.late_live[skip:]
+            lates = [late[skip:] for late in self.late]
+            m = S
+        else:
+            late_pos, late_live, lates = self.late_pos, self.late_live, self.late
+        end = min(self.at+m, S)
+        n1 = end-self.at
+        for K, V, late in zip(self.K, self.V, lates):
+            kl = torch.stack([kv[0].detach().to(K.dtype) for kv in late], 2)
+            vl = torch.stack([kv[1].detach().to(V.dtype) for kv in late], 2)
+            K[:, :, self.at:end] = kl[:, :, :n1]
+            V[:, :, self.at:end] = vl[:, :, :n1]
+            if n1 < m:
+                K[:, :, :m-n1] = kl[:, :, n1:]
+                V[:, :, :m-n1] = vl[:, :, n1:]
+        lv = torch.stack(late_live, 1)
+        ps = _pos_tensor(late_pos, self.where.device)
+        self.there[:, self.at:end] = lv[:, :n1]
+        self.where[self.at:end] = ps[:n1]
+        if n1 < m:
+            self.there[:, :m-n1] = lv[:, n1:]
+            self.where[:m-n1] = ps[n1:]
+        self.at = (self.at+m) % S
+        self.late, self.late_pos, self.late_live, self.cut_pos = [[] for _ in self.K], [], [], None
 
 
 class Held(nn.Module):
@@ -868,6 +1034,7 @@ class SeqAIO(nn.Module):
     """aio.seqnet.Tokens as aio.net.AIO is used: `steps` over sequences or single decisions, the last w decisions kept in
     the state (behind the room of AIO's own memories, which stays zero: the trainer's layout of a state is AIO's)."""
     canonical = True
+    supports_fast_steps = True
 
     def __init__(self, asked=True, w=W, knots=None):
         super().__init__()
@@ -880,25 +1047,66 @@ class SeqAIO(nn.Module):
         self.amp = os.environ.get('AIO_SEQ_AMP', '0') == '1'                                  # AIO_SEQ_AMP=1, on a card: windows, and single decisions with a graph, in bfloat16 (half the memory of the graph; the moves differ by a few percent of their size)
         self.rooms, self.most, self.clock = {}, int(os.environ.get('AIO_SEQ_ROOMS', 4)), 0    # the batches whose last decisions are kept (Room): at most so many (0: none, every decision computes its whole history)
 
+    def enable_compile(self, dynamic=True, backend='inductor'):
+        """Compile `self.actor` step cores and outer hot helpers (zero `_orig_mod.` keys in state_dict)."""
+        self.actor.enable_compile(dynamic=dynamic, backend=backend)
+        return self
+
     def forget(self):
         """Drop what is kept of the batches' last decisions (the memory; the next decision of a batch builds it again)."""
         self.rooms = {}
         self.last_room = None
 
-    def room(self, past, n, ncv, nmv):
+    def settle_rooms(self, inplace=True):
+        """Settle all rooms holding active `late` autograd graphs into their detached KV rings.
+        Call right after `loss.backward()` (`inplace=True`, zero transient K/V clone) so inactive lanes do not pin graphs."""
+        for rs in self.rooms.values():
+            for r in rs:
+                if r.late_pos or r.read:
+                    r.settle(inplace=inplace)
+
+    def room(self, past, n, ncv, nmv, hidden=None, lane_tag=None):
         """The Room of the batch whose state holds the packets `past` (b,w,f), n (b,) of them there: the one kept for it,
-        else a new one, built from the packets (the oldest batch's dropped past `most`)."""
+        else a new one, built from the packets (the oldest batch's dropped past `most`).
+        Zero-sync fast paths: (1) unmodified live `hidden` tensor object returned on the previous step (exact weakref +
+        _version check); (2) caller-provided `lane_tag` (e.g. `(id(lane), id(prog))`) across `detach()`/`cut_rows()`."""
         b, w, key = past.shape[0], self.w, (past.shape[0], ncv, nmv, past.device)
         self.clock += 1
+        rs = self.rooms.get(key, ())
+        if hidden is not None:
+            for r in rs:
+                ref = r._last_h_ref
+                if ref is not None and ref() is hidden:
+                    if hidden._version == r._last_h_ver:
+                        r.used = self.clock
+                        if lane_tag is not None and not self.peeking:
+                            r.lane_tag = lane_tag
+                        return r
+                    break                                                                                # in-place mutation on `hidden`: must run full equality check
+            if lane_tag is not None:
+                for r in rs:
+                    if r.lane_tag == lane_tag:
+                        ref = r._last_h_ref
+                        if ref is None or ref() is not hidden or hidden._version == r._last_h_ver:
+                            r.used = self.clock
+                            return r
         flat, some = past.reshape(b, -1), n > 0
-        if bool(some.any()):
-            for r in self.rooms.get(key, ()):
+        if hidden is not None and bool(some.any()):
+            for r in rs:
                 if bool(((~some) | ((n == r.n) & (flat == r.raw).all(-1))).all()):
                     r.there[~some] = False                                                                   # a plant whose state was cleared starts again
                     r.late_live = [l & some for l in r.late_live]
+                    if r.cut_pos is not None:
+                        r.cut_pos = torch.where(some, r.cut_pos, torch.full_like(r.cut_pos, -10**9))
                     r.used = self.clock
+                    if lane_tag is not None and not self.peeking:
+                        r.lane_tag = lane_tag
                     return r
-        every = sorted(((r.used, k, r) for k, rs in self.rooms.items() for r in rs), key=lambda x: x[0])
+        if lane_tag is not None:
+            for r in rs:
+                if r.lane_tag == lane_tag:
+                    r.lane_tag = None
+        every = sorted(((r.used, k, r) for k, rs_ in self.rooms.items() for r in rs_), key=lambda x: x[0])
         for i, (used, k, old) in enumerate(every):                                                           # room for it: the batches not seen for long go, and the oldest past `most`
             if len(every)-i >= self.most or self.clock-used > IDLE:
                 self.rooms[k].remove(old)
@@ -907,16 +1115,19 @@ class SeqAIO(nn.Module):
         r = Room(len(self.actor.layers), b, ncv+nmv, self.heads, w+1, d//self.heads, past.device)
         self.built += 1
         r.used = self.clock
+        r.lane_tag = lane_tag
         self.rooms.setdefault(key, []).append(r)
+        if hidden is None:
+            return r
         size = past.shape[-1]-nmv
         mem_r = past.new_zeros(b, ncv+nmv, self.mem, dtype=torch.float32) if self.mem else None
         edge_r = past.new_zeros(b, ncv, nmv, self.edge, dtype=torch.float32) if self.edge else None
         rel_r = past.new_zeros(b, rel_state_size(ncv, nmv), dtype=torch.float32) if self.rel else None
-        with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16, enabled=self.amp and past.is_cuda):
+        with torch.no_grad(), _amp_ctx(self.amp, past):
             for j in range(w):                                                                               # the packets the state holds, one decision after the other
                 live = j >= w-n
                 if bool(live.any()):
-                    self.actor.step(past[:, j:j+1, :size], past[:, j:j+1, size:], r, mem_r, edge_r, rel_r)
+                    self.actor.step(past[:, j:j+1, :size], past[:, j:j+1, size:], r, mem_r, edge_r, rel_r, need_read=False)
                     if self.mem:
                         mem_r = torch.where(live[:, None, None], self.actor.mem_last, mem_r)
                     if self.edge:
@@ -947,88 +1158,97 @@ class SeqAIO(nn.Module):
 
     def cut(self, stop):
         """--guard cut on the decisions made with a graph since the state last came without one: the episodes where stop
-        (b,) is set pass no gradient back past this point through what the time attention keeps of them (Room.late)."""
+        (b,) is set pass no gradient back past this point through what the time attention keeps of them (Room.late).
+        Stores an immutable per-env `cut_pos` snapshot on Room and masks inside checkpointed `_step_core_late` (0 extra VRAM)."""
         r = self.last_room
         if r is None or not r.late_pos:
             return
-        N = r.K[0].shape[0]//stop.shape[0]
-        sb = stop.repeat_interleave(N)[:, None, None]
-        for late in r.late:
-            for j, (k, v) in enumerate(late):
-                late[j] = (torch.where(sb, k.detach(), k), torch.where(sb, v.detach(), v))
+        pos_t = torch.full((stop.shape[0],), r.pos, dtype=torch.long, device=stop.device)
+        if r.cut_pos is None:
+            r.cut_pos = torch.where(stop, pos_t, torch.full_like(pos_t, -10**9))
+        else:
+            r.cut_pos = torch.where(stop, pos_t, r.cut_pos)
 
-    def steps(self, obs, previous, hidden=None, code=None, feats=None):
+    def steps(self, obs, previous, hidden=None, code=None, feats=None, need_read=True, lane_tag=None):
         """-> mean (b,T,NMV) before the tanh, the head's second output (--probe: aio.net.probing), the MV mask, the responses read
-        (b,T,NCV,NMV,knots), the state (1,b,state_size). code and feats (the told responses, the sums' features) are not used."""
+        (b,T,NCV,NMV,knots) or None if need_read=False, the state (1,b,state_size). code and feats (the told responses, the sums' features) are not used."""
         from aio import net as N
         from aio.interface import shape as shape_of
         ncv, nmv = shape_of(obs.shape[-1])
         b, T, w, f = obs.shape[0], obs.shape[1], self.w, obs.shape[-1]+nmv
         size, at = self.state_size(ncv, nmv), N.base_size(ncv, nmv)+N.sizes(ncv, nmv)[7]
         graph = torch.is_grad_enabled() and hidden is not None and hidden.requires_grad                       # the state carries the graph of the decisions before
+        hidden_in = hidden
         if hidden is None:
             hidden = obs.new_zeros(1, b, size, dtype=torch.float32)
         elif hidden.shape[-1] < size:
             hidden = torch.cat((hidden, hidden.new_zeros(1, b, size-hidden.shape[-1])), -1)
+            hidden_in = hidden
         past, n = hidden[0, :, at:at+w*f].reshape(b, w, f), hidden[0, :, at+w*f].round().long().clamp(0, w)      # right-aligned: the last n are there
         ma, NM = at+w*f+1, (ncv+nmv)*self.mem                                                              # mK: the tokens' memory behind them
         ea, NE = ma+NM, ncv*nmv*self.edge                                                                  # eK: persistent pairwise edge memory behind mK
         ra, NR = ea+NE, (rel_state_size(ncv, nmv) if self.rel else 0)                                      # r1: multi-scale DeltaNet state behind eK
-        mem0 = hidden[0, :, ma:ma+NM].reshape(b, ncv+nmv, self.mem) if self.mem else None
-        edge0 = hidden[0, :, ea:ea+NE].reshape(b, ncv, nmv, self.edge) if self.edge else None
-        rel0 = hidden[0, :, ra:ra+NR] if self.rel else None
+        mem0 = hidden[0, :, ma:ma+NM].reshape(b, ncv+nmv, self.mem).clone() if self.mem else None          # clone tiny slices so autograd does not pin full `hidden`
+        edge0 = hidden[0, :, ea:ea+NE].reshape(b, ncv, nmv, self.edge).clone() if self.edge else None
+        rel0 = hidden[0, :, ra:ra+NR].clone() if self.rel else None
         if T > 1 and (self.fb or self.edge or self.rel):                                                   # recurrent cross-step feedback: exact step-by-step equivalence with T=1
-            h_cur = hidden
+            h_cur = hidden_in
             ms, ws, mks, ls = [], [], [], []
             for t in range(T):
-                mt, wt, mkt, lt, h_cur = self.steps(obs[:, t:t+1], previous[:, t:t+1], h_cur, code, feats)
+                mt, wt, mkt, lt, h_cur = self.steps(obs[:, t:t+1], previous[:, t:t+1], h_cur, code, feats, need_read=need_read, lane_tag=lane_tag)
                 ms.append(mt); ws.append(wt); mks.append(mkt); ls.append(lt)
-            return torch.cat(ms, 1), torch.cat(ws, 1), torch.cat(mks, 1), torch.cat(ls, 1), h_cur
-        x = torch.cat((past.to(obs.dtype), torch.cat((obs, previous.to(obs.dtype)), -1)), 1)                  # (b,w+T,f)
+            return torch.cat(ms, 1), torch.cat(ws, 1), torch.cat(mks, 1), (torch.cat(ls, 1) if need_read else None), h_cur
 
-        def state(keep):
+        def state(keep, det=False):
             mem = (self.actor.mem_last.reshape(b, NM).float(),) if self.mem else ()
             edg = (self.actor.edge_last.reshape(b, NE).float(),) if self.edge else ()
             rel_s = (self.actor.rel_last.reshape(b, NR).float(),) if self.rel else ()
-            return torch.cat((hidden[0, :, :at].float(), keep)+mem+edg+rel_s+(hidden[0, :, ra+NR:].float(),), -1)[None]
+            h0 = hidden[0].detach() if det else hidden[0]
+            return torch.cat((h0[:, :at].float(), keep)+mem+edg+rel_s+(h0[:, ra+NR:].float(),), -1)[None]
         if T == 1 and self.most > 0:                                                                         # one decision: only it is computed (Room)
-            r = self.room(past.detach().to(obs.dtype), n, ncv, nmv)
+            r = self.room(past.detach().to(obs.dtype), n, ncv, nmv, hidden=hidden_in, lane_tag=lane_tag)
             self.last_room = r
             if not graph:
                 r.settle()
             if torch.is_grad_enabled():                                                                      # with a graph through the decisions since the state last came without one
-                with torch.autocast('cuda', dtype=torch.bfloat16, enabled=self.amp and obs.is_cuda):          # (AIO_SEQ_AMP=1: as the windows are)
-                    lab, mean, when = self.actor.step_graph(obs, previous.to(obs.dtype), r, mem0, edge0, rel0)
+                with _amp_ctx(self.amp, obs):                                                                # (AIO_SEQ_AMP=1: hoisted-friendly, no re-entry if already active)
+                    lab, mean, when = self.actor.step_graph(obs, previous.to(obs.dtype), r, mem0, edge0, rel0, need_read=need_read)
                 r.on_graph()
             elif self.peeking:                                                                               # a decision that is not kept: the Room as it was
                 snap = (r.at, r.pos, r.there[:, r.at].clone(), r.where[r.at].clone(), [K[:, :, r.at].clone() for K in r.K], [V[:, :, r.at].clone() for V in r.V])
-                with torch.autocast('cuda', dtype=torch.bfloat16, enabled=self.amp and obs.is_cuda):
-                    lab, mean, when = self.actor.step(obs, previous.to(obs.dtype), r, mem0, edge0, rel0)
+                with _amp_ctx(self.amp, obs):
+                    lab, mean, when = self.actor.step(obs, previous.to(obs.dtype), r, mem0, edge0, rel0, need_read=need_read)
                 r.at, r.pos = snap[0], snap[1]
                 r.there[:, r.at], r.where[r.at] = snap[2], snap[3]
                 for K, V, k0, v0 in zip(r.K, r.V, snap[4], snap[5]):
                     K[:, :, r.at], V[:, :, r.at] = k0, v0
             else:
-                with torch.autocast('cuda', dtype=torch.bfloat16, enabled=self.amp and obs.is_cuda):
-                    lab, mean, when = self.actor.step(obs, previous.to(obs.dtype), r, mem0, edge0, rel0)
+                with _amp_ctx(self.amp, obs):
+                    lab, mean, when = self.actor.step(obs, previous.to(obs.dtype), r, mem0, edge0, rel0, need_read=need_read)
                 r.on()
             mask = unpack(obs)[1][..., -1]
-            keep = torch.cat((x[:, -w:].reshape(b, w*f).float(), (n+1).clamp(max=w).float()[:, None]), -1)
-            if not self.peeking or torch.is_grad_enabled():
-                r.raw, r.n = x[:, -w:].reshape(b, w*f).detach().to(obs.dtype), (n+1).clamp(max=w)
-            hidden = state(keep)
+            past_next = torch.cat((past.detach()[:, 1:].to(obs.dtype), torch.cat((obs.detach(), previous.detach().to(obs.dtype)), -1)), 1)
+            n_next = (n+1).clamp(max=w)
+            keep = torch.cat((past_next.reshape(b, w*f).float(), n_next.float()[:, None]), -1)
+            hidden = state(keep, det=True)
             mean = mean.float()*mask
             if mean.requires_grad:
                 hidden = hidden+0.*mean.sum()                                                                # (the state says that a graph goes with it)
-            return mean, when.float()*mask, mask, lab.float(), hidden
+            if not self.peeking or torch.is_grad_enabled():
+                r.raw, r.n = past_next.reshape(b, w*f), n_next
+                r._last_h_ref, r._last_h_ver = weakref.ref(hidden), hidden._version
+                if lane_tag is not None:
+                    r.lane_tag = lane_tag
+            return mean, when.float()*mask, mask, (None if lab is None else lab.float()), hidden
+        x = torch.cat((past.to(obs.dtype), torch.cat((obs, previous.to(obs.dtype)), -1)), 1)                  # (b,w+T,f)
         j = torch.arange(w+T, device=obs.device)
         there = j[None, :] >= (w-n)[:, None]                                                               # (b,w+T)
         back = j[:, None]-j[None, :]                                                                        # a decision sees itself and the w before it: what it has when it runs alone
         seen = ((back >= 0) & (back <= w))[None] & (there[:, None, :] | (back == 0)[None])
-        with torch.autocast('cuda', dtype=torch.bfloat16, enabled=self.amp and obs.is_cuda):
-            lab, mean, when = self.actor(x[..., :obs.shape[-1]], x[..., obs.shape[-1]:], seen, w, mem0)       # the w decisions of the state: attended to, no graph through them
+        with _amp_ctx(self.amp, obs):
+            lab, mean, when = self.actor(x[..., :obs.shape[-1]], x[..., obs.shape[-1]:], seen, w, mem0, need_read=need_read)  # the w decisions of the state: attended to, no graph through them
         mask = unpack(obs)[1][..., -1]
         keep = torch.cat((x[:, -w:].reshape(b, w*f).float(), (n+T).clamp(max=w).float()[:, None]), -1)
         hidden = state(keep)
         mean = mean.float()*mask
-        return mean, when.float()*mask, mask, lab.float(), hidden
+        return mean, when.float()*mask, mask, (None if lab is None else lab.float()), hidden
