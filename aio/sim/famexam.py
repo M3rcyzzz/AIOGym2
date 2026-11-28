@@ -1,6 +1,6 @@
 """Scores per mechanistic plant family, for the research site's chart (one batch of fixed episodes per family).
 
-  python -m aio.sim.famexam --plants tep,bsm1,column --ckpt RUN/SEED/last.pt --out fam.json [--n 8 --seed 3000000]
+  python -m aio.sim.famexam --plants tep,bsm1,column --ctl MODULE:FACTORY --arg WEIGHTS --out fam.json [--n 8 --seed 3000000]
 
 Every family gets its own batch (--n episodes of --seed on that plant alone, aio.sim.mech, one window of the core's
 horizon); every controller runs the same episodes. Points per family = 100 * (hold - controller) / (hold - teacher),
@@ -10,75 +10,54 @@ plant (plants.HELDOUT: vam, boiler, ...) is named the same way. A plant with mor
 smallest size that holds it (prior.SIZES). `trips`: per controller, the episodes that went past a shutdown limit the
 plant declares (Tennessee Eastman's interlocks; reported, not scored) and the decision each first did (null: never).
 
---ablate (11-15: what the fixed operators beside the network are worth): the same weights also run as `aio_law` (the
-move is the product of the law's read-outs alone, K.E/V, the network's own output left out), `aio_nolaw` (the product
-not given to the MVs), `aio_nostats` (the running sums' features not given to the pairs) and `aio_neither` (both). The
-weights were trained with both, so the last three say how much the network leans on them, not what one trained
-without them would do.
+A --ctl factory (aio.sim.plugin) may return either a single controller or a dict `{name: controller}` (e.g. a set of
+ablated variants); all entries are merged into the exam batch.
 """
 import argparse, json, time
 from pathlib import Path
 import torch
 
-from aio.sim import core as C, control as CT, mech as ME, plants as PL, prior as PR
+from aio.sim import core as C, control as CT, mech as ME, plants as PL, plugin as PG, prior as PR
 
 
-def ablated(ckpt, dev):
-    """The controllers of --ablate, each on its own copy of the weights."""
-    from torch import nn
-    from aio import net as N
-    from aio.actor import TOKEN
-
-    class Zero(nn.Module):
-        def __init__(self, out):
-            super().__init__()
-            self.o = out
-
-        def forward(self, x):
-            return x.new_zeros(x.shape[:-1]+(self.o,))
-
-    class LawOnly(N.Policy):
-        @torch.no_grad()
-        def __call__(self, prog, st, k, obs):
-            from aio.frame import canonical
-            o, s = canonical(obs.float(), torch.ones(prog.n, dtype=torch.bool, device=obs.device) if self.unpaired else None)
-            mask, self.h = self.net.steps(o[:, None], self.prev[:, None], self.h, None)[2::2]
-            self.prev = self.net.pairs.read_law[3][:, 0].clamp(-1., 1.).float()*mask[:, 0]
-            return (self.prev*s).to(prog.dtype)
-
-    out = {}
-    for how in ('law', 'nolaw', 'nostats', 'neither'):
-        net = N.load(ckpt, dev)[0]
-        p = net.pairs
-        assert p.law and p.stats is not None and not p.apart, '--ablate: weights with the running sums and the law\'s product read'
-        if how in ('nostats', 'neither'):
-            p.stat = Zero(N.P)
-            if hasattr(p, 'stat2'):
-                p.stat2 = Zero(N.P)
-        if how in ('nolaw', 'neither'):
-            p.law_in = Zero(TOKEN)
-        out['aio_'+how] = LawOnly(net) if how == 'law' else N.Policy(net)
-    return out
-
-
-def main():
+def _parser():
     ap = argparse.ArgumentParser()
     ap.add_argument('--plants', required=True)
-    ap.add_argument('--ckpt', type=Path)
+    ap.add_argument('--ctl', default='', help='MODULE:FACTORY of an external controller or {name: controller} dict (aio.sim.plugin)')
+    ap.add_argument('--arg', default=None, help='argument passed to FACTORY (e.g. a weights path)')
+    ap.add_argument('--name', default=None, help='controller name when FACTORY returns one controller (defaults to meta["name"] or "aio")')
+    ap.add_argument('--ckpt', default=None, help=argparse.SUPPRESS)
+    ap.add_argument('--ablate', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--n', type=int, default=8)
     ap.add_argument('--seed', type=int, default=3_000_000)
     ap.add_argument('--out', type=Path, required=True)
     ap.add_argument('--device', default='cpu')
-    ap.add_argument('--ablate', action='store_true', help='also the same weights with the law\'s move alone, and with the law\'s product, the running sums or both taken from the network')
-    a = ap.parse_args()
-    dev = torch.device(a.device)
-    ctl = dict(hold=CT.Hold(), pi=CT.PI(), dmc=CT.Teacher('fixed', meter=True), teacher=CT.Teacher('late'))
+    return ap
+
+
+def _load_ctl(ap, a, dev):
+    if a.ckpt and not a.ctl:
+        ap.error('--ckpt has been removed; pass --ctl MODULE:FACTORY --arg PATH instead (aio.sim.plugin)')
     if a.ckpt:
-        from aio import net as N
-        net, _ = N.load(a.ckpt, dev)
-        ctl['aio'] = N.Policy(net)
-        if a.ablate:
-            ctl.update(ablated(a.ckpt, dev))
+        ap.error('--ckpt has been removed; pass --arg PATH with --ctl MODULE:FACTORY instead')
+    if a.ablate:
+        ap.error('--ablate has been removed; pass a --ctl MODULE:FACTORY returning a dict of controllers instead')
+    ctl = dict(hold=CT.Hold(), pi=CT.PI(), dmc=CT.Teacher('fixed', meter=True), teacher=CT.Teacher('late'))
+    if a.ctl:
+        built, meta = PG.build(a.ctl, a.arg, device=dev)
+        if isinstance(built, dict):
+            ctl.update(built)
+        else:
+            cname = a.name or (meta.get('name') if isinstance(meta, dict) else None) or 'aio'
+            ctl[cname] = built
+    return ctl
+
+
+def main(argv=None):
+    ap = _parser()
+    a = ap.parse_args(argv)
+    dev = torch.device(a.device)
+    ctl = _load_ctl(ap, a, dev)
     out = json.loads(a.out.read_text()) if a.out.exists() else {}
     for q in a.plants.split(','):
         if q in out:

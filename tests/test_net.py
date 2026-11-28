@@ -216,11 +216,27 @@ def test_critic(packets):
 
 
 def test_the_controller_wrappers_agree(packets):
+    class _LegacyPolicy:
+        def __init__(self, actor):
+            self.actor = actor
+
+        def reset(self, prog):
+            self.h = torch.zeros(1, prog.n, BASE, device=prog.device)
+            self.prev = torch.zeros(prog.n, prog.nmv, device=prog.device)
+
+        @torch.no_grad()
+        def __call__(self, prog, st, k, obs):
+            o, s = canonical(obs.float())
+            joint, mem, mask, self.h = self.actor.history(o[:, None], self.prev[:, None], self.h)
+            mean, _, _ = self.actor.distribution(joint, mem, mask)
+            self.prev = torch.tanh(mean[:, 0])*mask[:, 0]
+            return (self.prev*s).to(prog.dtype)
+
     net = lively(N.AIO()).eval()
     prog = C.build(6, 21)
     steps = int(prog.seg_k[:, 1].sort().values[2])+15                                    # past the first event of three of the episodes: before it nothing is charged
     a = CT.rollout(prog, N.Policy(net), steps)
-    b = CT.rollout(prog, CT.Policy(net.legacy()), steps)                                 # the earlier actor's interface
+    b = CT.rollout(prog, _LegacyPolicy(net.legacy()), steps)                             # the earlier actor's interface
     assert torch.allclose(a['score'], b['score']) and torch.allclose(a['cost'], b['cost'], rtol=1e-3)
     k = CT.rollout(prog, N.Policy(net, known=True), steps)
     assert not torch.allclose(k['cost'], a['cost'])                                      # told the true responses it moves differently

@@ -17,8 +17,6 @@ the plant once the plant is no longer the one it was commissioned on.
             unmeasured loads move), 'now' (the same, re-identified at every event: upper reference),
             'fixed' (the commissioning model and no sight of the loads: a step-test DMC, the engineering
             reference)
-  Policy    the earlier actor alone (aio.actor.Actor), deterministic, direct-acting frame;
-            the network with the pair pathway is driven by aio.net.Policy
 """
 import torch
 
@@ -67,29 +65,6 @@ class Teacher:
 
     def __call__(self, prog, st, k, obs):
         return C.teacher(prog, st, k)
-
-
-class Policy:
-    """A trained actor on the packet (deterministic mean action; `canonical`: direct-acting frame)."""
-
-    def __init__(self, actor, canonical=True):
-        self.actor, self.canonical = actor, canonical
-
-    def reset(self, prog):
-        from aio.actor import STATE
-        self.h = torch.zeros(1, prog.n, STATE, device=prog.device)
-        self.prev = torch.zeros(prog.n, prog.nmv, device=prog.device)
-
-    @torch.no_grad()
-    def __call__(self, prog, st, k, obs):
-        from aio.frame import canonical
-        o = obs.float()
-        o, s = canonical(o) if self.canonical else (o, torch.ones(prog.n, prog.nmv, device=prog.device))
-        joint, mem, mask, self.h = self.actor.history(o[:, None], self.prev[:, None], self.h)
-        mean, _, _ = self.actor.distribution(joint, mem, mask)
-        a = torch.tanh(mean[:, 0])*mask[:, 0]
-        self.prev = a
-        return (a*s).to(prog.dtype)
 
 
 @torch.no_grad()

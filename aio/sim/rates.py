@@ -271,6 +271,7 @@ class Valves:
         g, m0 = prog.mg[0], prog.mg[0]['m']
         self.ex, self.ctl, self.g = ex, ctl, g
         self.M = Mech(m0.plants, m0.pid, device=m0.device, dtype=m0.dtype, _base=m0._base, pace=m0.pace/ex.m)
+        self.trips, self.tripped = self.M.trips, self.M.tripped
         self.nxp, self.nmv = m0.nx, prog.nmv
         self.nx = self.nxp+1+len(STATE)*self.nmv+2
         t = prog.mech.groups[0].t
@@ -437,10 +438,10 @@ def _ctl(q):
 
 
 def ruled(slow, fast):
-    """The two controllers joined by the limit rule of aio.tiers: the slow one reads its packet, and moves, inside
-    limits taken in where the valve under an MV is at an end of its stroke."""
-    from aio import tiers as TI
-    p = TI.Pair(lambda: slow, fast=lambda: fast)
+    """The two controllers joined by the limit rule of aio.sim.cascade: the slow one reads its packet, and moves,
+    inside limits taken in where the valve under an MV is at an end of its stroke."""
+    from aio.sim import cascade as CA
+    p = CA.Pair(lambda: slow, fast=lambda: fast)
     return p.slow, p.fast
 
 
