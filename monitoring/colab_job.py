@@ -25,6 +25,8 @@ MARK = '@@aio@@'
 PART = 40 << 20             # a request to the VM's contents API carries up to ~100 MB of base64: bigger files go in parts
 SMALL = 1 << 20             # besides last.pt and metrics.jsonl, the run's files up to this size go to a new VM
 UPLOADS = 4                 # parts sent at once: one stream from the Mac is slow
+DOWNLOADS = UPLOADS         # parts pulled at once in pull(): matches put()
+LAST_EVERY = 1800           # default seconds between heavy last.pt syncs (30 min; always synced on rollover/exit)
 POLL = 120                  # seconds between the watcher's looks at whether the command has ended
 AHEAD = 3                   # hours before a VM is too old (--max-hours) from which the next one is asked for, while it runs on
 PIP = ['numpy>=2', 'scipy']  # pyproject's dependencies (torch is the VM's own)
@@ -289,12 +291,20 @@ def put(s, job, src, rel):
         raise RuntimeError(f'{dst}: {got} bytes there, {size} here')
 
 
-def wants_sync(rel, sync_rows=False):
-    """Whether a run file on the VM is pulled back to the Mac. Bulk historical rowN.pt snapshots (2+ GB each) are
-    skipped by default so Mac disk stays bounded to last.pt, best.pt, and small logs/metadata; --sync-rows pulls all."""
+def wants_sync(rel, sync_rows=False, sync_last=True):
+    """Whether a run file on the VM is pulled back to the Mac. Lightweight eval/row*.pt snapshots always sync;
+    bulk historical rowN.pt snapshots (2+ GB each) are skipped by default unless --sync-rows is set; heavy
+    last.pt can be throttled via sync_last=False between --last-every intervals (always synced on rollover/exit)."""
+    p = Path(rel)
+    if p.suffix == '.tmp' or p.name.startswith('.'):
+        return False
+    if p.parent.name == 'eval':
+        return True
+    if p.name == 'last.pt' and not sync_last:
+        return False
     if sync_rows:
         return True
-    return not ROW_CKPT.match(Path(rel).name)
+    return not ROW_CKPT.match(p.name)
 
 
 def is_transient(err):
@@ -336,13 +346,23 @@ def pull(s, job, rels, tar):
         return {}
     parts = st['parts']
     with tempfile.TemporaryDirectory(dir=d) as td:
-        whole, part = Path(td)/'whole', Path(td)/'part'
-        with open(whole, 'wb') as out:
-            for idx, p in enumerate(parts):
+        whole = Path(td)/'whole'
+        if len(parts) == 1:
+            download_part(s, f'{VM}/{job["name"]}/.xfer/{parts[0]}', whole, expected_size=st['size'])
+        else:
+            def one(item):
+                idx, p = item
                 expected = PART if idx < len(parts) - 1 else st['size'] - PART * (len(parts) - 1)
+                part = Path(td)/f'part.{idx:03d}'
                 download_part(s, f'{VM}/{job["name"]}/.xfer/{p}', part, expected_size=expected)
-                out.write(part.read_bytes())
-                part.unlink()
+                return part
+            with keepalive(s, job), ThreadPoolExecutor(min(DOWNLOADS, len(parts))) as ex:
+                got_parts = list(ex.map(one, enumerate(parts)))
+            with open(whole, 'wb') as out:
+                for part in got_parts:
+                    with open(part, 'rb') as inp:
+                        shutil.copyfileobj(inp, out, 4 << 20)
+                    part.unlink()
         if whole.stat().st_size != st['size']:
             raise RuntimeError(f'{rels[0]}...: {whole.stat().st_size} bytes came back, {st["size"]} there')
         if tar:
@@ -362,16 +382,16 @@ def save_seen(d, seen):
     os.replace(p.with_suffix('.tmp'), p)
 
 
-def sync(job, s, sync_rows=None):
+def sync(job, s, sync_rows=None, sync_last=True):
     """The run's new and changed files and job.log from VM s -> (its status, the files that came back). The .pt first:
     metrics.jsonl is not behind the last.pt here (a row more is done again after a resume). Bulk rowN.pt snapshots are
-    skipped unless sync_rows (or job['sync_rows']) is set."""
+    skipped unless sync_rows (or job['sync_rows']) is set; eval/row*.pt snapshots always sync."""
     if sync_rows is None:
         sync_rows = bool(job.get('sync_rows'))
     d = ROOT/job['name']
     seen = json.loads((d/'synced.json').read_text()) if (d/'synced.json').exists() else {}
     st = rexec(s, job, STATUS, timeout=120)
-    new = [r for r, v in st['files'].items() if seen.get(r) != v and wants_sync(r, sync_rows)]
+    new = [r for r, v in st['files'].items() if seen.get(r) != v and wants_sync(r, sync_rows, sync_last=sync_last)]
     got = {}
     for r in sorted((x for x in new if x.endswith('.pt')), key=lambda x: (x.endswith('/last.pt'), x)):   # last.pt last
         one = pull(s, job, [r], False)
@@ -417,6 +437,40 @@ def new_vm(job, limit=3600):
     raise RuntimeError(f'no VM of {job["gpu"]} in {limit/60:.0f} min of asking')
 
 
+def _cmd_words(cmd):
+    out = []
+    for x in cmd or ():
+        out += x.split() if ' ' in x else [x]
+    return out
+
+
+def should_skip_in_pt(job, back, run_dir):
+    """Skip uploading in/*.pt weights on rollover when run/last.pt is already in `back` and every command uses
+    `--resume` (saves ~6.2 min / 1.16 CU per rollover without breaking fresh starts or non-resume jobs)."""
+    if not back:
+        return False
+    back_rels = {str(Path('run')/f.relative_to(run_dir)) for f in back}
+    subs = job.get('pack') or [dict(name='', cmd=job.get('cmd') or [])]
+    for sub in subs:
+        last_rel = f'run/{sub["name"]}/last.pt' if sub.get('name') else 'run/last.pt'
+        if last_rel not in back_rels or '--resume' not in _cmd_words(sub.get('cmd')):
+            return False
+    return True
+
+
+def prune_orphaned_tmps(job_dir):
+    """Remove orphaned tmp* staging directories left behind inside a job folder by interrupted pulls."""
+    removed = []
+    d = Path(job_dir)
+    if not d.exists():
+        return removed
+    for p in sorted(d.iterdir()):
+        if p.is_dir() and p.name.startswith('tmp'):
+            shutil.rmtree(p, ignore_errors=True)
+            removed.append(p.name)
+    return removed
+
+
 def launch(job, vm=None):
     """A new VM for the job (vm: the one already there for it, `spare`), all it needs there, its command started."""
     name, d = job['name'], ROOT/job['name']
@@ -428,12 +482,15 @@ def launch(job, vm=None):
     run = d/'run'
     back = [f for f in run.rglob('*') if f.is_file() and not f.name.startswith('.') and
             (f.name in ('last.pt', 'metrics.jsonl') or (f.suffix != '.pt' and f.stat().st_size <= SMALL))] if any(run.rglob('last.pt')) else []
+    skip_in_pt = should_skip_in_pt(job, back, run)
     try:
         dirs = sorted({'in', 'run'} | {str(Path('run')/f.relative_to(run).parent) for f in back})
         rexec(s, job, 'import os\nfor p in DIRS:\n    os.makedirs(J+"/"+p, exist_ok=True)\nprint(MARK+"0")', DIRS=dirs)
         for src in srcs(job):
             put(s, job, d/f'{src}.tgz', f'{src}.tgz')
         for f in sorted((d/'in').iterdir()):
+            if skip_in_pt and f.suffix == '.pt':
+                continue
             put(s, job, f, f'in/{f.name}')
         for f in back:
             put(s, job, f, str(Path('run')/f.relative_to(run)))
@@ -495,14 +552,19 @@ def watcher(job):
 
 def watch(name):
     """Until the job is done: sync every --every seconds, a new VM for one that is gone or too old, stop at the end."""
-    job = load(name)
+    with lock(name):
+        job = load(name)
+        pruned = prune_orphaned_tmps(ROOT/name)
+        if pruned:
+            say(name, f'watch: pruned {len(pruned)} orphaned tmp dir(s): {", ".join(pruned[:5])}')
+        job['watcher'] = os.getpid()
+        save(job)
     if shutil.which('caffeinate'):
         subprocess.Popen(['caffeinate', '-is', '-w', str(os.getpid())])
-    job['watcher'] = os.getpid()
-    save(job)
-    say(name, f'watch: pid {os.getpid()}, every {job["every"]} s, a new VM after {job["max_hours"]} h')
+    say(name, f'watch: pid {os.getpid()}, every {job["every"]} s, last every {job.get("last_every", LAST_EVERY)} s, a new VM after {job["max_hours"]} h')
     gone = dead = 0
     synced = 0.
+    last_synced = 0.
     wait = 0
     while True:                                                 # (the nap first: a `continue` below still waits)
         time.sleep(wait)
@@ -543,8 +605,12 @@ def watch(name):
                 gone = 0
                 age = (time.time()-job['starts'][-1]['time'])/3600
                 if time.time()-synced >= job['every']:
-                    st, got = sync(job, s)
+                    last_every = job.get('last_every', LAST_EVERY)
+                    need_last = bool(spare) or last_every <= 0 or (time.time()-last_synced >= last_every)
+                    st, got = sync(job, s, sync_last=need_last)
                     synced = time.time()
+                    if need_last and not spare:
+                        last_synced = synced
                 else:                                           # between syncs only whether it has ended: a VM idles less
                     st, got = rexec(s, job, STATUS, timeout=120), {}
                 if st['exit'] is not None:
@@ -578,10 +644,11 @@ def watch(name):
                         if age > job['max_hours']:
                             say(name, f'{s} is {age:.1f} h old and no VM to go on with yet ({str(e)[-80:]}): it runs on')
                 elif spare:
-                    if 'run/last.pt' in got or time.time()-spare['time'] > 1800:
+                    if any(k == 'run/last.pt' or k.endswith('/last.pt') for k in got) or time.time()-spare['time'] > 1800:
                         say(name, f'{s} is {age:.1f} h old: {spare["session"]} goes on from the last.pt here')
                         stop_vm(job, s)
                         launch(job, (spare['session'], spare['gpu']))
+                        last_synced = time.time()
                     else:
                         synced = 0.                             # for the next last.pt
                         wait = 60
@@ -620,6 +687,8 @@ def main():
     p.add_argument('--put', action='append', default=[], help='a local file the command reads as {in}/NAME')
     p.add_argument('--pip', action='append', default=[], help='a package more to install on each VM')
     p.add_argument('--every', type=int, default=600, help='seconds between the watcher\'s rounds')
+    p.add_argument('--last-every', type=int, default=LAST_EVERY,
+                   help='seconds between heavy last.pt syncs (default 1800 = 30 min; always synced on rollover/exit)')
     p.add_argument('--max-hours', type=float, default=23., help='a VM this old is replaced (Colab ends them at 24 h)')
     p.add_argument('--no-watch', action='store_true')
     p.add_argument('--pack', type=Path, help='instead of a command: a JSON list of {"name", "ref", "cmd"} run at once on the VM, '
@@ -633,6 +702,8 @@ def main():
         if q == 'sync':
             sp.add_argument('--sync-rows', action='store_const', const=True, default=None,
                             help='also pull historical rowN.pt checkpoints for this sync')
+            sp.add_argument('--no-last', action='store_true',
+                            help='skip heavy last.pt during this manual sync (eval/row*.pt and logs still sync)')
     argv = sys.argv[1:]
     cmd = argv[argv.index('--')+1:] if '--' in argv else []      # the command: all after --, with {run} and {in}
     a = ap.parse_args(argv[:argv.index('--')] if '--' in argv else argv)
@@ -674,6 +745,8 @@ def main():
                 shutil.copy2(Path(f).expanduser(), d/'in'/Path(f).name)
             job = dict(name=a.name, ref=a.ref, commit=commit, gpu=a.gpu, high_mem=a.high_mem, pip=a.pip, cmd=cmd, pack=pack,
                        threads=a.threads, mps=a.mps, every=a.every, max_hours=a.max_hours, sync_rows=a.sync_rows, starts=[], made=time.time())
+            if a.last_every != LAST_EVERY:
+                job['last_every'] = a.last_every
         job['session'] = None
         save(job)
         print(f'{a.name}: its watcher gets it a VM (watch.log)')
@@ -684,7 +757,7 @@ def main():
     elif a.do == 'sync':
         job = load(a.name)
         with lock(a.name):
-            st, got = sync(job, job['session'], sync_rows=a.sync_rows)
+            st, got = sync(job, job['session'], sync_rows=a.sync_rows, sync_last=not a.no_last)
         print(json.dumps(dict(running=st['running'], exit=st['exit'], gpu=st['gpu'], came_back=sorted(got))))
     elif a.do == 'stop':
         job = load(a.name)
