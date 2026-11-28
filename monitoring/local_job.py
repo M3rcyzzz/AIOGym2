@@ -792,8 +792,12 @@ def sync_job(host_cfg, host_name, job_name, dest=None, with_last=False, with_eva
         for name in ls.stdout.splitlines():
             name = name.strip()
             if name.endswith('.pt') and not name.endswith('.tmp'):
-                _transfer_file_from_remote(host_cfg, f'{remote_job}/run/eval/{name}', dst / 'run' / 'eval' / name)
-                pulled.append(f'run/eval/{name}')
+                try:
+                    _transfer_file_from_remote(host_cfg, f'{remote_job}/run/eval/{name}', dst / 'run' / 'eval' / name)
+                    pulled.append(f'run/eval/{name}')
+                except RuntimeError as exc:
+                    if 'No such file or directory' not in str(exc):
+                        raise
     if with_last:
         _transfer_file_from_remote(host_cfg, f'{remote_job}/run/last.pt', dst / 'run' / 'last.pt')
         pulled.append('run/last.pt')
